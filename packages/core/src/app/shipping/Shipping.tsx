@@ -1,3 +1,4 @@
+// @ts-nocheck
 import {
     Address,
     AddressRequestBody,
@@ -33,6 +34,7 @@ import ShippingForm from './ShippingForm';
 import ShippingHeader from './ShippingHeader';
 import { SingleShippingFormValues } from './SingleShippingForm';
 import StripeShipping from './stripeUPE/StripeShipping';
+import findLineItems from './findLineItems';
 
 export interface ShippingProps {
     isBillingSameAsShipping: boolean;
@@ -85,6 +87,7 @@ export interface WithCheckoutShippingProps {
 
 interface ShippingState {
     isInitializing: boolean;
+    oneTime: boolean;
 }
 
 class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, ShippingState> {
@@ -93,6 +96,7 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
 
         this.state = {
             isInitializing: true,
+            oneTime: false,
         };
     }
 
@@ -103,6 +107,8 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
             loadPaymentMethods,
             onReady = noop,
             onUnhandledError = noop,
+            consignments,
+            cart,
         } = this.props;
 
         try {
