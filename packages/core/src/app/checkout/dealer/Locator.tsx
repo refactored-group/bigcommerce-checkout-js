@@ -75,7 +75,7 @@ export default class Locator extends React.PureComponent<LocatorProps, LocatorSt
     .then(res => res.json())
     .then(data => {
       this.setState({
-        dealers: data.dealers.sort((dealer, nextDealer) => nextDealer.preferred ? 1 : -1)
+        dealers: data.dealers
       });
     }).catch(console.log);
   }
