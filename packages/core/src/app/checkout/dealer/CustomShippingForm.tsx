@@ -1,278 +1,209 @@
 import React from 'react';
+import { DynamicFormField } from '../../ui/form';
+import { FormField, FormFieldFieldType } from '@bigcommerce/checkout-sdk';
 import './CustomShippingForm.scss';
 
 interface CustomShippingFormProps {
-  customShippingAddress: string;
-  customShippingAddressError: boolean;
-  customShippingApartment: string;
-  customShippingCity: string;
-  customShippingCityError: boolean;
-  customShippingCompany: string;
-  customShippingFirstName: string;
+  customShippingFirstName?: string;
   customShippingFirstNameError: boolean;
-  customShippingLastName: string;
+  customShippingLastName?: string;
   customShippingLastNameError: boolean;
-  customShippingPhone: string;
-  customShippingPostal: string;
+  customShippingCompany?: string;
+  customShippingPhone?: string;
+  customShippingAddress?: string;
+  customShippingAddressError: boolean;
+  customShippingApartment?: string;
+  customShippingCity?: string;
+  customShippingCityError: boolean;
+  customShippingPostal?: string;
   customShippingPostalError: boolean;
-  onChangeCustomShippingField: any;
+  onChangeCustomShippingField: (value: string, fieldId: string) => void;
 }
 
-interface CustomShippingFormState {}
+const CustomShippingForm: React.FC<CustomShippingFormProps> = (props) => {
+  // Create FormField objects for each field
+  const firstNameField: FormField = {
+    id: 'firstNameInput',
+    name: 'firstName',
+    type: 'string',
+    label: 'First Name',
+    required: true,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
 
-export default class CustomShippingForm extends React.PureComponent<
-  CustomShippingFormProps,
-  CustomShippingFormState
-> {
-  constructor(props: any) {
-    super(props);
+  const lastNameField: FormField = {
+    id: 'lastNameInput',
+    name: 'lastName',
+    type: 'string',
+    label: 'Last Name',
+    required: true,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
 
-    this.onChangeField = this.onChangeField.bind(this);
-  }
+  const companyField: FormField = {
+    id: 'companyInput',
+    name: 'company',
+    type: 'string',
+    label: 'Company Name',
+    required: false,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
 
-  onChangeField(event: any): void {
-    const value = event.target.value;
-    const fieldId = event.target.id;
+  const phoneField: FormField = {
+    id: 'phoneInput',
+    name: 'phone',
+    type: 'string',
+    label: 'Phone Number',
+    required: false,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
 
-    this.props.onChangeCustomShippingField(value, fieldId);
-  }
+  const addressField: FormField = {
+    id: 'addressLine1Input',
+    name: 'address1',
+    type: 'string',
+    label: 'Address',
+    required: true,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
 
-  render() {
-    return (
-      <div className="checkout-address">
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--firstName ' +
-            (this.props.customShippingFirstNameError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="firstNameInput-label" className="form-label optimizedCheckout-form-label">
-              First Name
-            </label>
-            <input
-              aria-labelledby="firstNameInput-label firstNameInput-field-error-message"
-              id="firstNameInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="firstName"
-              value={this.props.customShippingFirstName}
-              onChange={this.onChangeField}
-            />
-            <ul
-              className={
-                'form-field-errors ' + (this.props.customShippingFirstNameError ? '' : 'hide')
-              }
-            >
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  First Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--lastName ' +
-            (this.props.customShippingLastNameError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="lastNameInput-label" className="form-label optimizedCheckout-form-label">
-              Last Name
-            </label>
-            <input
-              aria-labelledby="lastNameInput-label lastNameInput-field-error-message"
-              id="lastNameInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="lastName"
-              value={this.props.customShippingLastName}
-              onChange={this.onChangeField}
-            />
-            <ul
-              className={
-                'form-field-errors ' + (this.props.customShippingLastNameError ? '' : 'hide')
-              }
-            >
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  Last Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div className="dynamic-form-field dynamic-form-field--company">
-          <div className="form-field">
-            <label id="companyInput-label" className="form-label optimizedCheckout-form-label">
-              Company Name <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-            </label>
-            <input
-              aria-labelledby="companyInput-label companyInput-field-error-message"
-              id="companyInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="company"
-              value={this.props.customShippingCompany}
-              onChange={this.onChangeField}
-            />
-          </div>
-        </div>
-        <div className="dynamic-form-field dynamic-form-field--phone">
-          <div className="form-field">
-            <label id="phoneInput-label" className="form-label optimizedCheckout-form-label">
-              Phone Number <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-            </label>
-            <input
-              aria-labelledby="phoneInput-label phoneInput-field-error-message"
-              id="phoneInput"
-              type="tel"
-              className="form-input optimizedCheckout-form-input"
-              name="phone"
-              value={this.props.customShippingPhone}
-              onChange={this.onChangeField}
-            />
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--addressLine1 ' +
-            (this.props.customShippingAddressError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="addressLine1Input-label" className="form-label optimizedCheckout-form-label">
-              Address
-            </label>
-            <input
-              aria-labelledby="addressLine1Input-label addressLine1Input-field-error-message"
-              id="addressLine1Input"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="address1"
-              value={this.props.customShippingAddress}
-              onChange={this.onChangeField}
-            />
-            <ul
-              className={
-                'form-field-errors ' + (this.props.customShippingAddressError ? '' : 'hide')
-              }
-            >
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  Address is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div className="dynamic-form-field dynamic-form-field--addressLine2">
-          <div className="form-field">
-            <label id="addressLine2Input-label" className="form-label optimizedCheckout-form-label">
-              Apartment/Suite/Building{' '}
-              <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-            </label>
-            <input
-              aria-labelledby="addressLine2Input-label addressLine2Input-field-error-message"
-              id="addressLine2Input"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="address2"
-              value={this.props.customShippingApartment}
-              onChange={this.onChangeField}
-            />
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--city ' +
-            (this.props.customShippingCityError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="cityInput-label" className="form-label optimizedCheckout-form-label">
-              City
-            </label>
-            <input
-              aria-labelledby="cityInput-label cityInput-field-error-message"
-              id="cityInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="city"
-              value={this.props.customShippingCity}
-              onChange={this.onChangeField}
-            />
-            <ul
-              className={'form-field-errors ' + (this.props.customShippingCityError ? '' : 'hide')}
-            >
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  City required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--postCode ' +
-            (this.props.customShippingPostalError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="postCodeInput-label" className="form-label optimizedCheckout-form-label">
-              Postal Code
-            </label>
-            <input
-              aria-labelledby="postCodeInput-label postCodeInput-field-error-message"
-              id="postCodeInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="postalCode"
-              value={this.props.customShippingPostal}
-              onChange={this.onChangeField}
-            />
-            <ul
-              className={
-                'form-field-errors ' + (this.props.customShippingPostalError ? '' : 'hide')
-              }
-            >
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  Postal Code is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
+  const apartmentField: FormField = {
+    id: 'addressLine2Input',
+    name: 'address2',
+    type: 'string',
+    label: 'Apartment/Suite/Building',
+    required: false,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
+
+  const cityField: FormField = {
+    id: 'cityInput',
+    name: 'city',
+    type: 'string',
+    label: 'City',
+    required: true,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
+
+  const postalCodeField: FormField = {
+    id: 'postCodeInput',
+    name: 'postalCode',
+    type: 'string',
+    label: 'Postal Code',
+    required: true,
+    custom: false,
+    fieldType: 'text' as FormFieldFieldType,
+  };
+
+  // Handle field changes
+  const handleFieldChange = (value: string | string[], fieldId: string) => {
+    // Ensure we're passing a string to onChangeCustomShippingField
+    const stringValue = typeof value === 'string' ? value : value[0] || '';
+    props.onChangeCustomShippingField(stringValue, fieldId);
+  };
+
+  return (
+    <div className="checkout-address">
+      <div
+        className={`dynamic-form-field ${
+          props.customShippingFirstNameError ? 'form-field--error' : ''
+        }`}
+      >
+        <DynamicFormField
+          field={firstNameField}
+          onChange={(value) => handleFieldChange(value, firstNameField.id)}
+          extraClass={props.customShippingFirstNameError ? 'form-field--error' : ''}
+        />
+        {props.customShippingFirstNameError && (
+          <div className="form-field-error">First Name is required</div>
+        )}
       </div>
-    );
-  }
-}
+
+      <div
+        className={`dynamic-form-field ${
+          props.customShippingLastNameError ? 'form-field--error' : ''
+        }`}
+      >
+        <DynamicFormField
+          field={lastNameField}
+          onChange={(value) => handleFieldChange(value, lastNameField.id)}
+          extraClass={props.customShippingLastNameError ? 'form-field--error' : ''}
+        />
+        {props.customShippingLastNameError && (
+          <div className="form-field-error">Last Name is required</div>
+        )}
+      </div>
+
+      <div className="dynamic-form-field">
+        <DynamicFormField
+          field={companyField}
+          onChange={(value) => handleFieldChange(value, companyField.id)}
+        />
+      </div>
+
+      <div className="dynamic-form-field">
+        <DynamicFormField
+          field={phoneField}
+          onChange={(value) => handleFieldChange(value, phoneField.id)}
+        />
+      </div>
+
+      <div
+        className={`dynamic-form-field ${
+          props.customShippingAddressError ? 'form-field--error' : ''
+        }`}
+      >
+        <DynamicFormField
+          field={addressField}
+          onChange={(value) => handleFieldChange(value, addressField.id)}
+          extraClass={props.customShippingAddressError ? 'form-field--error' : ''}
+        />
+        {props.customShippingAddressError && (
+          <div className="form-field-error">Address is required</div>
+        )}
+      </div>
+
+      <div className="dynamic-form-field">
+        <DynamicFormField
+          field={apartmentField}
+          onChange={(value) => handleFieldChange(value, apartmentField.id)}
+        />
+      </div>
+
+      <div
+        className={`dynamic-form-field ${props.customShippingCityError ? 'form-field--error' : ''}`}
+      >
+        <DynamicFormField
+          field={cityField}
+          onChange={(value) => handleFieldChange(value, cityField.id)}
+          extraClass={props.customShippingCityError ? 'form-field--error' : ''}
+        />
+        {props.customShippingCityError && <div className="form-field-error">City is required</div>}
+      </div>
+
+      <div
+        className={`dynamic-form-field ${
+          props.customShippingPostalError ? 'form-field--error' : ''
+        }`}
+      >
+        <DynamicFormField
+          field={postalCodeField}
+          onChange={(value) => handleFieldChange(value, postalCodeField.id)}
+          extraClass={props.customShippingPostalError ? 'form-field--error' : ''}
+        />
+        {props.customShippingPostalError && (
+          <div className="form-field-error">Postal Code is required</div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default CustomShippingForm;

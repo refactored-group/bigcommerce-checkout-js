@@ -1,85 +1,88 @@
 import React from 'react';
+import { DynamicFormField } from '../../ui/form';
+import { FormField } from '@bigcommerce/checkout-sdk';
 
 interface StatesDropdownProps {
   validateSelectedState: any;
 }
 
-interface StatesDropdownState {}
+const StatesDropdown: React.FC<StatesDropdownProps> = ({ validateSelectedState }) => {
+  // Create a FormField object that matches the BigCommerce SDK's expected format
+  const stateField: FormField = {
+    id: 'stateField',
+    name: 'stateOrProvinceCode',
+    type: 'string',
+    label: 'State/Province',
+    required: true,
+    custom: false,
+    fieldType: 'dropdown',
+    options: {
+      items: [
+        { label: 'Select a state', value: '' },
+        { label: 'Alabama', value: 'AL' },
+        { label: 'Alaska', value: 'AK' },
+        { label: 'Arizona', value: 'AZ' },
+        { label: 'Arkansas', value: 'AR' },
+        { label: 'California', value: 'CA' },
+        { label: 'Colorado', value: 'CO' },
+        { label: 'Connecticut', value: 'CT' },
+        { label: 'Delaware', value: 'DE' },
+        { label: 'Florida', value: 'FL' },
+        { label: 'Georgia', value: 'GA' },
+        { label: 'Hawaii', value: 'HI' },
+        { label: 'Idaho', value: 'ID' },
+        { label: 'Illinois', value: 'IL' },
+        { label: 'Indiana', value: 'IN' },
+        { label: 'Iowa', value: 'IA' },
+        { label: 'Kansas', value: 'KS' },
+        { label: 'Kentucky', value: 'KY' },
+        { label: 'Louisiana', value: 'LA' },
+        { label: 'Maine', value: 'ME' },
+        { label: 'Maryland', value: 'MD' },
+        { label: 'Massachusetts', value: 'MA' },
+        { label: 'Michigan', value: 'MI' },
+        { label: 'Minnesota', value: 'MN' },
+        { label: 'Mississippi', value: 'MS' },
+        { label: 'Missouri', value: 'MO' },
+        { label: 'Montana', value: 'MT' },
+        { label: 'Nebraska', value: 'NE' },
+        { label: 'Nevada', value: 'NV' },
+        { label: 'New Hampshire', value: 'NH' },
+        { label: 'New Jersey', value: 'NJ' },
+        { label: 'New Mexico', value: 'NM' },
+        { label: 'New York', value: 'NY' },
+        { label: 'North Carolina', value: 'NC' },
+        { label: 'North Dakota', value: 'ND' },
+        { label: 'Ohio', value: 'OH' },
+        { label: 'Oklahoma', value: 'OK' },
+        { label: 'Oregon', value: 'OR' },
+        { label: 'Pennsylvania', value: 'PA' },
+        { label: 'Rhode Island', value: 'RI' },
+        { label: 'South Carolina', value: 'SC' },
+        { label: 'South Dakota', value: 'SD' },
+        { label: 'Tennessee', value: 'TN' },
+        { label: 'Texas', value: 'TX' },
+        { label: 'Utah', value: 'UT' },
+        { label: 'Vermont', value: 'VT' },
+        { label: 'Virginia', value: 'VA' },
+        { label: 'Washington', value: 'WA' },
+        { label: 'West Virginia', value: 'WV' },
+        { label: 'Wisconsin', value: 'WI' },
+        { label: 'Wyoming', value: 'WY' },
+      ],
+    },
+  };
 
-export default class StatesDropdown extends React.PureComponent<StatesDropdownProps, StatesDropdownState> {
-  constructor(props: any) {
-    super(props);
-  }
+  // Handle the value from DynamicFormField and pass it to validateSelectedState
+  const handleStateChange = (value: string) => {
+    validateSelectedState(value);
+  };
 
-  render() {
-    return (
-      <div className="dynamic-form-field" style={{ paddingBottom: "1rem" }}>
-        <div className="form-field">
-          <label className="form-label optimizedCheckout-form-label">
-              State/Province
-          </label>
-          <div className="dropdown-chevron">
-              <div className="icon">
-                  <svg height="24" viewBox="0 0 24 24" width="24" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"></path>
-                  </svg>
-              </div>
-          </div>
-            <select className="form-select optimizedCheckout-form-select" onChange={ this.props.validateSelectedState }>
-                <option value="">Select a state</option>
-                <option value="AL">Alabama</option>
-                <option value="AK">Alaska</option>
-                <option value="AZ">Arizona</option>
-                <option value="AR">Arkansas</option>
-                <option value="CA">California</option>
-                <option value="CO">Colorado</option>
-                <option value="CT">Connecticut</option>
-                <option value="DE">Delaware</option>
-                <option value="FL">Florida</option>
-                <option value="GA">Georgia</option>
-                <option value="HI">Hawaii</option>
-                <option value="ID">Idaho</option>
-                <option value="IL">Illinois</option>
-                <option value="IN">Indiana</option>
-                <option value="IA">Iowa</option>
-                <option value="KS">Kansas</option>
-                <option value="KY">Kentucky</option>
-                <option value="LA">Louisiana</option>
-                <option value="ME">Maine</option>
-                <option value="MD">Maryland</option>
-                <option value="MA">Massachusetts</option>
-                <option value="MI">Michigan</option>
-                <option value="MN">Minnesota</option>
-                <option value="MS">Mississippi</option>
-                <option value="MO">Missouri</option>
-                <option value="MT">Montana</option>
-                <option value="NE">Nebraska</option>
-                <option value="NV">Nevada</option>
-                <option value="NH">New Hampshire</option>
-                <option value="NJ">New Jersey</option>
-                <option value="NM">New Mexico</option>
-                <option value="NY">New York</option>
-                <option value="NC">North Carolina</option>
-                <option value="ND">North Dakota</option>
-                <option value="OH">Ohio</option>
-                <option value="OK">Oklahoma</option>
-                <option value="OR">Oregon</option>
-                <option value="PA">Pennsylvania</option>
-                <option value="RI">Rhode Island</option>
-                <option value="SC">South Carolina</option>
-                <option value="SD">South Dakota</option>
-                <option value="TN">Tennessee</option>
-                <option value="TX">Texas</option>
-                <option value="UT">Utah</option>
-                <option value="VT">Vermont</option>
-                <option value="VA">Virginia</option>
-                <option value="WA">Washington</option>
-                <option value="WV">West Virginia</option>
-                <option value="WI">Wisconsin</option>
-                <option value="WY">Wyoming</option>
-            </select>
-          </div>
-      </div>
-    );
-  }
-}
+  return (
+    <div className="dynamic-form-field" style={{ paddingBottom: '1rem' }}>
+      <DynamicFormField field={stateField} onChange={handleStateChange} />
+    </div>
+  );
+};
+
+export default StatesDropdown;

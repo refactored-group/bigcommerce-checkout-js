@@ -373,7 +373,38 @@ class DealerShipping extends React.PureComponent<
     });
   };
 
-  onChangeCustomShippingField: () => void = (value, stateKey) => {
+  onChangeCustomShippingField: () => void = (value, fieldId) => {
+    // Map the field IDs from DynamicFormField to the state keys
+    let stateKey;
+    switch (fieldId) {
+      case 'firstNameInput':
+        stateKey = 'customShippingFirstName';
+        break;
+      case 'lastNameInput':
+        stateKey = 'customShippingLastName';
+        break;
+      case 'companyInput':
+        stateKey = 'customShippingCompany';
+        break;
+      case 'phoneInput':
+        stateKey = 'customShippingPhone';
+        break;
+      case 'addressLine1Input':
+        stateKey = 'customShippingAddress';
+        break;
+      case 'addressLine2Input':
+        stateKey = 'customShippingApartment';
+        break;
+      case 'cityInput':
+        stateKey = 'customShippingCity';
+        break;
+      case 'postCodeInput':
+        stateKey = 'customShippingPostal';
+        break;
+      default:
+        stateKey = fieldId;
+    }
+
     const stateKeyError = `${stateKey}Error`;
 
     this.setState(
@@ -395,9 +426,12 @@ class DealerShipping extends React.PureComponent<
     );
   };
 
-  validateSelectedState: (event: any) => void = () => {
+  validateSelectedState: (event: any) => void = (event) => {
     const { deleteConsignment, onUnhandledError } = this.props;
-    const fflRequired = this.state.ammoFFLRequiredStates.includes(event.target.value);
+
+    // Handle both direct value (from DynamicFormField) and event.target.value (from native select)
+    const stateValue = typeof event === 'string' ? event : event.target.value;
+    const fflRequired = this.state.ammoFFLRequiredStates.includes(stateValue);
 
     // deletes consignments, this will unassign previously selected addresses for each line item
     if (this.props.consignments.length > 0) {
@@ -416,10 +450,10 @@ class DealerShipping extends React.PureComponent<
       });
     }
 
-    if (event.target.value == '') {
-      this.setState({ ammoStateFFLRequired: null, ammoSelectedState: event.target.value });
+    if (stateValue == '') {
+      this.setState({ ammoStateFFLRequired: null, ammoSelectedState: stateValue });
     } else {
-      this.setState({ ammoStateFFLRequired: fflRequired, ammoSelectedState: event.target.value });
+      this.setState({ ammoStateFFLRequired: fflRequired, ammoSelectedState: stateValue });
     }
   };
 
@@ -629,10 +663,18 @@ class DealerShipping extends React.PureComponent<
         {this.state.ammoStateFFLRequired == false && (
           <CustomShippingForm
             onChangeCustomShippingField={this.onChangeCustomShippingField}
+            customShippingFirstName={this.state.customShippingFirstName}
             customShippingFirstNameError={this.state.customShippingFirstNameError}
+            customShippingLastName={this.state.customShippingLastName}
             customShippingLastNameError={this.state.customShippingLastNameError}
+            customShippingCompany={this.state.customShippingCompany}
+            customShippingPhone={this.state.customShippingPhone}
+            customShippingAddress={this.state.customShippingAddress}
             customShippingAddressError={this.state.customShippingAddressError}
+            customShippingApartment={this.state.customShippingApartment}
+            customShippingCity={this.state.customShippingCity}
             customShippingCityError={this.state.customShippingCityError}
+            customShippingPostal={this.state.customShippingPostal}
             customShippingPostalError={this.state.customShippingPostalError}
           />
         )}
@@ -786,7 +828,7 @@ class DealerShipping extends React.PureComponent<
 
     if (this.state.ammoStateFFLRequired == false) {
       if (this.validateCustomShippingFields() == false) {
-        break;
+        return;
       }
     }
 
