@@ -52,7 +52,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="firstNameInput-label firstNameInput-field-error-message"
-              id="customShippingFirstName"
+              id="firstNameInput"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="firstName"
@@ -89,7 +89,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="lastNameInput-label lastNameInput-field-error-message"
-              id="customShippingLastName"
+              id="lastNameInput"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="lastName"
@@ -121,7 +121,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="companyInput-label companyInput-field-error-message"
-              id="customShippingCompany"
+              id="companyInput"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="company"
@@ -137,7 +137,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="phoneInput-label phoneInput-field-error-message"
-              id="customShippingPhone"
+              id="phoneInput"
               type="tel"
               className="form-input optimizedCheckout-form-input"
               name="phone"
@@ -158,7 +158,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="addressLine1Input-label addressLine1Input-field-error-message"
-              id="customShippingAddress"
+              id="addressLine1Input"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="address1"
@@ -191,7 +191,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="addressLine2Input-label addressLine2Input-field-error-message"
-              id="customShippingAddress"
+              id="addressLine2Input"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="address2"
@@ -212,7 +212,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="cityInput-label cityInput-field-error-message"
-              id="customShippingCity"
+              id="cityInput"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="city"
@@ -247,7 +247,7 @@ export default class CustomShippingForm extends React.PureComponent<
             </label>
             <input
               aria-labelledby="postCodeInput-label postCodeInput-field-error-message"
-              id="customShippingPostal"
+              id="postCodeInput"
               type="text"
               className="form-input optimizedCheckout-form-input"
               name="postalCode"
