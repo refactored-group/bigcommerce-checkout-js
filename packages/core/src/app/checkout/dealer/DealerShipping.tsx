@@ -42,6 +42,7 @@ import {
 } from '../../address';
 import { retry, EMPTY_ARRAY } from '../../common/utility';
 import { Form } from '../../ui/form';
+import { SingleShippingFormValues } from '../../shipping/SingleShippingForm';
 
 import getShippableLineItems from './getShippableLineItems';
 
@@ -107,6 +108,16 @@ const CustomShippingForm = lazy(() =>
   ),
 );
 
+const ShippingForm = lazy(() =>
+  retry(
+    () =>
+      import(
+        /* webpackChunkName: "shippingForm" */
+        '../../shipping/ShippingForm'
+      ),
+  ),
+);
+
 export interface MultiShippingFormValues {
   orderComment: string;
 }
@@ -147,36 +158,70 @@ export interface WithCheckoutShippingProps {
 }
 
 interface DealerProps {
-  cartHasChanged: any;
-  isMultiShippingMode: any;
-  navigateNextStep: any;
-  onCreateAccount: any;
-  fflConsignmentItems: any;
-  ammoConsignmentItems: any;
-  onReady: any;
-  onSignIn: any;
-  onToggleMultiShipping: any;
-  onUnhandledError: any;
-  isValid?: any;
-  addresses: any;
+  cartHasChanged: boolean;
+  isMultiShippingMode: boolean;
+  navigateNextStep: (isBillingSameAsShipping: boolean) => void;
+  onCreateAccount: () => void;
+  fflConsignmentItems: Array<{
+    itemId: string;
+    quantity: number;
+  }>;
+  ammoConsignmentItems: Array<{
+    itemId: string;
+    quantity: number;
+  }>;
+  onReady: () => void;
+  onSignIn: () => void;
+  onToggleMultiShipping: () => void;
+  onUnhandledError: (error: Error) => void;
+  isValid?: boolean;
+  addresses: Address[];
   defaultCountryCode: string;
   customerMessage: string;
   storeHash: string;
+  setFFLtoOrderComments: (value: boolean) => void;
+  setWithAmmoSubscription: (value: boolean) => void;
+  setSelectedFFL: (fflId: string) => void;
 }
 
 interface DealerState {
-  selectedDealer: any;
-  showLocator: any;
-  manualFflInput: any;
+  selectedDealer: {
+    fflID: string;
+    countryCode: string;
+  } | null;
+  showLocator: boolean;
+  manualFflInput: boolean;
   isUpdatingShippingData: boolean;
   isLoading: boolean;
-  items: any;
-  itemAddingAddress: any;
-  createCustomerAddressError: any;
+  items: Array<{
+    id: string;
+    quantity: number;
+    productId: string;
+    name: string;
+    imageUrl?: string;
+    options?: Array<{
+      name: string;
+      nameId: string;
+      value: string;
+    }>;
+    key: string;
+    consignment?: {
+      shippingAddress: Address;
+    };
+  }>;
+  itemAddingAddress:
+    | {
+        key: string;
+        itemId: string;
+      }
+    | undefined;
+  createCustomerAddressError: Error | null;
   isInitializing?: boolean;
-  announcement: any;
-  multiShipment: any;
-  ammoFFLRequiredStates: any;
+  announcement: string;
+  bypassAnnouncement: string;
+  bypassOption: boolean;
+  multiShipment: boolean;
+  ammoFFLRequiredStates: string[];
   ammoStateFFLRequired: boolean;
   ammoSelectedState: string;
   customFirstNameInput: string;
@@ -193,6 +238,7 @@ interface DealerState {
   customPostCodeInput: string;
   customPostCodeInputError: boolean;
   withAmmoSubscription: boolean;
+  bypassFFL: boolean;
 }
 
 class DealerShipping extends React.PureComponent<
@@ -218,9 +264,9 @@ class DealerShipping extends React.PureComponent<
     return null;
   }
 
-  private debouncedAssignAddress: any;
+  private debouncedAssignShippingAddress: () => Promise<void>;
 
-  constructor(props: any) {
+  constructor(props: DealerProps & WithCheckoutShippingProps) {
     super(props);
 
     this.state = {
@@ -228,6 +274,9 @@ class DealerShipping extends React.PureComponent<
       ammoSelectedState: '',
       ammoStateFFLRequired: null,
       announcement: '',
+      bypassAnnouncement: 'Bypass FFL checks. I will send my FFL documents.',
+      bypassOption: false,
+      bypassFFL: false,
       createCustomerAddressError: null,
       customAddressLine1Input: '',
       customAddressLine1InputError: false,
@@ -253,7 +302,7 @@ class DealerShipping extends React.PureComponent<
       withAmmoSubscription: false,
     };
 
-    this.debouncedAssignCustomShippingAddress = debounce(async () => {
+    this.debouncedAssignShippingAddress = debounce(async () => {
       const { assignItem } = this.props;
       const address = {
         firstName: this.state.customFirstNameInput,
@@ -269,52 +318,67 @@ class DealerShipping extends React.PureComponent<
         localizedCountry: 'United States',
         countryCode: 'US',
       };
-      const lineItems = this.props.cart.lineItems.physicalItems.map((item) => {
-        let container = {};
-        container.itemId = item.id;
-        container.quantity = item.quantity;
-        return container;
-      });
+
+      // When bypassing FFL, assign address to all items
+      const lineItems = this.state.bypassFFL
+        ? this.props.cart.lineItems.physicalItems.map((item) => ({
+            itemId: item.id,
+            quantity: item.quantity,
+          }))
+        : this.props.cart.lineItems.physicalItems
+            .filter((item) => !this.getFFLItems().some((fflItem) => fflItem.itemId === item.id))
+            .map((item) => ({
+              itemId: item.id,
+              quantity: item.quantity,
+            }));
+
       await assignItem({
         address,
-        lineItems: lineItems,
+        lineItems,
       });
     }, 500);
-
-    fetch(`https://${process.env.HOST}/store-front/api/stores/${this.props.storeHash}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        const merchantStates = data.merchant.merchant_states.filter(
-          (merchantState) => merchantState.enabled,
-        );
-
-        this.props.setFFLtoOrderComments(data.ffl_to_order_comments);
-        this.props.setWithAmmoSubscription(data.with_ammo_subscription);
-        this.setState({
-          announcement: data.announcement,
-          multiShipment: data.multi_shipment,
-          isLoading: false,
-          ammoFFLRequiredStates: merchantStates.map((ms) => ms.state.code),
-          withAmmoSubscription: data.with_ammo_subscription,
-        });
-      })
-      .catch(console.log);
   }
 
   async componentDidMount(): Promise<void> {
-    const { onReady = noop, onUnhandledError } = this.props;
+    const { onReady = noop, onUnhandledError, storeHash } = this.props;
 
     try {
+      // Fetch FFL store data
+      const response = await fetch(`https://${process.env.HOST}/store-front/api/${storeHash}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const merchantStates = data.merchant.merchant_states.filter(
+        (merchantState) => merchantState.enabled,
+      );
+
+      this.props.setFFLtoOrderComments(data.ffl_to_order_comments);
+      this.props.setWithAmmoSubscription(data.with_ammo_subscription);
+
+      this.setState({
+        announcement: data.announcement,
+        bypassAnnouncement:
+          data.bypass_announcement || 'Bypass FFL checks. I will send my FFL documents.',
+        bypassOption: data.bypass_option,
+        multiShipment: data.multi_shipment,
+        isLoading: false,
+        ammoFFLRequiredStates: merchantStates.map((ms) => ms.state.code),
+        withAmmoSubscription: data.with_ammo_subscription,
+      });
+
       onReady();
     } catch (error) {
+      console.error('Error fetching FFL store data:', error);
+      this.setState({ isLoading: false });
       onUnhandledError(error);
-    } finally {
-      this.setState({ isInitializing: false });
     }
   }
 
@@ -334,7 +398,11 @@ class DealerShipping extends React.PureComponent<
     });
   };
 
-  selectDealer: (dealer: any) => void = async (dealer: any) => {
+  selectDealer = async (dealer: {
+    fflID: string;
+    countryCode: string;
+    [key: string]: any; // Allow additional properties since dealer object may have more fields
+  }): Promise<void> => {
     this.setState({
       selectedDealer: dealer,
       showLocator: false,
@@ -373,7 +441,7 @@ class DealerShipping extends React.PureComponent<
     });
   };
 
-  onChangeCustomShippingField: () => void = (value, fieldId) => {
+  onChangeCustomShippingField = (value: string, stateKey: keyof DealerState): void => {
     const fieldIdToStateMap = {
       firstNameInput: 'customFirstNameInput',
       lastNameInput: 'customLastNameInput',
@@ -401,13 +469,13 @@ class DealerShipping extends React.PureComponent<
           this.state.customCityInput != '' &&
           this.state.customPostCodeInput != ''
         ) {
-          this.debouncedAssignCustomShippingAddress();
+          this.debouncedAssignShippingAddress();
         }
       },
     );
   };
 
-  validateSelectedState: (event: any) => void = () => {
+  validateSelectedState = (event: React.ChangeEvent<HTMLSelectElement>): void => {
     const { deleteConsignment, onUnhandledError } = this.props;
     const fflRequired = this.state.ammoFFLRequiredStates.includes(event.target.value);
 
@@ -438,10 +506,15 @@ class DealerShipping extends React.PureComponent<
   private shouldDisableSubmit: () => boolean = () => {
     const { isLoading, consignments, isValid } = this.props;
 
-    const { isUpdatingShippingData } = this.state;
+    const { isUpdatingShippingData, bypassFFL } = this.state;
 
     if (!isValid) {
       return false;
+    }
+
+    // If bypassing FFL, only check if shipping address is valid
+    if (bypassFFL) {
+      return isLoading || isUpdatingShippingData || !this.validateCustomShippingFields();
     }
 
     return isLoading || isUpdatingShippingData || !hasSelectedShippingOptions(consignments);
@@ -501,139 +574,212 @@ class DealerShipping extends React.PureComponent<
 
     return (
       <section className="ffl-section checkout-form">
-        {fflConsignmentItems.length == 0 &&
+        {this.state.bypassOption &&
+          (fflConsignmentItems.length > 0 ||
+            (ammoConsignmentItems.length > 0 && this.state.withAmmoSubscription)) && (
+            <div className="bypass-ffl-option">
+              <label
+                className="form-label"
+                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+              >
+                <input
+                  type="checkbox"
+                  style={{ margin: 0 }}
+                  checked={this.state.bypassFFL}
+                  onChange={() => this.setState({ bypassFFL: !this.state.bypassFFL })}
+                />
+                <span>{this.state.bypassAnnouncement}</span>
+              </label>
+            </div>
+          )}
+
+        {!this.state.bypassFFL &&
+          fflConsignmentItems.length == 0 &&
           ammoConsignmentItems.length > 0 &&
           this.state.withAmmoSubscription && (
             <StatesDropdown validateSelectedState={this.validateSelectedState} />
           )}
 
-        {(this.state.ammoStateFFLRequired || fflConsignmentItems.length > 0) && (
-          <div>
-            {this.state.manualFflInput === false &&
-              (this.state.selectedDealer == null || !fflConsignment) && (
-                <div className="alertBox alertBox--error alertBox--font-color-black">
-                  <div className="alertBox-column alertBox-icon">
-                    <div className="icon"></div>
+        {!this.state.bypassFFL &&
+          (this.state.ammoStateFFLRequired || fflConsignmentItems.length > 0) && (
+            <div>
+              {this.state.manualFflInput === false &&
+                (this.state.selectedDealer == null || !fflConsignment) && (
+                  <div className="alertBox alertBox--error alertBox--font-color-black">
+                    <div className="alertBox-column alertBox-icon">
+                      <div className="icon"></div>
+                    </div>
+                    {groupedItemsWithFFLEntries.map(([key, items]) => (
+                      <li key={items[0].key}>
+                        <ItemFFL item={items[0]} quantity={items.length} />
+                      </li>
+                    ))}
+                    <div className="alertBox-column alertBox-message">
+                      <p>
+                        You have purchased an item that must be shipped to a Federal Firearms
+                        License holder (FFL).
+                      </p>
+                      <p>
+                        Before making a selection, contact the FFL and verify that they can accept
+                        your shipment prior to completing your purchase.
+                      </p>
+                    </div>
                   </div>
+                )}
+
+              {this.state.selectedDealer != null && fflConsignment && (
+                <div className="consignment-product-body alertBox--success shipping">
                   {groupedItemsWithFFLEntries.map(([key, items]) => (
                     <li key={items[0].key}>
                       <ItemFFL item={items[0]} quantity={items.length} />
                     </li>
                   ))}
-                  <div className="alertBox-column alertBox-message">
-                    <p>
-                      You have purchased an item that must be shipped to a Federal Firearms License
-                      holder (FFL).
-                    </p>
-                    <p>
-                      Before making a selection, contact the FFL and verify that they can accept
-                      your shipment prior to completing your purchase.
-                    </p>
-                  </div>
+                  <StaticAddress
+                    address={fflConsignment.shippingAddress}
+                    type={AddressType.Shipping}
+                  />
                 </div>
               )}
 
-            {this.state.selectedDealer != null && fflConsignment && (
-              <div className="consignment-product-body alertBox--success shipping">
-                {groupedItemsWithFFLEntries.map(([key, items]) => (
-                  <li key={items[0].key}>
-                    <ItemFFL item={items[0]} quantity={items.length} />
-                  </li>
-                ))}
-                <StaticAddress
-                  address={fflConsignment.shippingAddress}
-                  type={AddressType.Shipping}
-                />
+              <div className="form-action">
+                <button
+                  type="button"
+                  className="button button--primary optimizedCheckout-buttonPrimary"
+                  onClick={this.toggleMapSelector}
+                >
+                  {this.state.selectedDealer != null && fflConsignment && (
+                    <TranslatedString id="shipping.ffl_change_dealer" />
+                  )}
+                  {(this.state.selectedDealer == null || !fflConsignment) && (
+                    <TranslatedString id="shipping.ffl_select_dealer" />
+                  )}
+                </button>
+              </div>
+
+              {!this.state.isLoading && (
+                <div>
+                  {
+                    <AddressFormModal
+                      countries={countries}
+                      countriesWithAutocomplete={countriesWithAutocomplete}
+                      defaultCountryCode={defaultCountryCode}
+                      getFields={getFields}
+                      googleMapsApiKey={googleMapsApiKey}
+                      isLoading={isLoading}
+                      isOpen={!!itemAddingAddress}
+                      onRequestClose={this.handleCloseAddAddressForm}
+                      onSaveAddress={this.handleSaveAddress}
+                    />
+                  }
+
+                  <Form>
+                    <ul className="consignmentList">
+                      {this.state.multiShipment ? (
+                        <div className="multiShip-text">
+                          {itemsWithoutFFL.length > 0 &&
+                            'Other items in cart will also ship to FFL'}
+                          {itemsWithoutFFL.map((item) => (
+                            <div className="consignment">
+                              <figure className="consignment-product-figure">
+                                {item.imageUrl && <img alt={item.name} src={item.imageUrl} />}
+                              </figure>
+                              <div className="consignment-product-body">
+                                <h4 className="optimizedCheckout-contentPrimary">{`${item.quantity} x ${item.name}`}</h4>
+                                {(item.options || []).map(({ name: optionName, value, nameId }) => (
+                                  <ul
+                                    className="product-options optimizedCheckout-contentSecondary"
+                                    data-test="consigment-item-product-options"
+                                    key={nameId}
+                                  >
+                                    <li className="product-option">{`${optionName} ${value}`}</li>
+                                  </ul>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        groupedItemsWithoutFFLEntries.map(([key, items], index) => (
+                          <div>
+                            <div className="consignment">
+                              <figure className="consignment-product-figure">
+                                {items[0].imageUrl && (
+                                  <img alt={items[0].imageUrl} src={items[0].imageUrl} />
+                                )}
+                              </figure>
+                              <div className="consignment-product-body">
+                                <h5 className="optimizedCheckout-contentPrimary">
+                                  {`${items.length} x ${items[0].name}`}
+                                </h5>
+                              </div>
+                            </div>
+                            {index + 1 == groupedItemsWithoutFFLEntries.length && (
+                              <AddressSelect
+                                addresses={customer.addresses}
+                                onSelectAddress={this.handleSelectAddress}
+                                onUseNewAddress={this.handleUseNewAddress}
+                                selectedAddress={
+                                  items[0].consignment && items[0].consignment.shippingAddress
+                                }
+                              />
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </ul>
+                  </Form>
+                </div>
+              )}
+            </div>
+          )}
+
+        {/* Show custom shipping form when bypassing FFL or when ammoStateFFLRequired is false */}
+        {(this.state.bypassFFL || this.state.ammoStateFFLRequired === false) && (
+          <div className="custom-shipping-section">
+            {this.state.bypassFFL && (
+              <div className="alertBox alertBox--info">
+                <div className="alertBox-column alertBox-message">
+                  <p>
+                    You have chosen to bypass FFL product checks. Please enter your shipping address
+                    below. All items will be shipped to this address.
+                  </p>
+                </div>
               </div>
             )}
-
-            <div className="form-action">
-              <button
-                type="button"
-                className="button button--primary optimizedCheckout-buttonPrimary"
-                onClick={this.toggleMapSelector}
-              >
-                {this.state.selectedDealer != null && fflConsignment && (
-                  <TranslatedString id="shipping.ffl_change_dealer" />
-                )}
-                {(this.state.selectedDealer == null || !fflConsignment) && (
-                  <TranslatedString id="shipping.ffl_select_dealer" />
-                )}
-              </button>
-            </div>
-
-            {!this.state.isLoading && (
-              <div>
-                {
-                  <AddressFormModal
-                    countries={countries}
-                    countriesWithAutocomplete={countriesWithAutocomplete}
-                    defaultCountryCode={defaultCountryCode}
-                    getFields={getFields}
-                    googleMapsApiKey={googleMapsApiKey}
-                    isLoading={isLoading}
-                    isOpen={!!itemAddingAddress}
-                    onRequestClose={this.handleCloseAddAddressForm}
-                    onSaveAddress={this.handleSaveAddress}
-                  />
-                }
-
-                <Form>
-                  <ul className="consignmentList">
-                    {this.state.multiShipment ? (
-                      <div className="multiShip-text">
-                        {itemsWithoutFFL.length > 0 && 'Other items in cart will also ship to FFL'}
-                        {itemsWithoutFFL.map((item) => (
-                          <div className="consignment">
-                            <figure className="consignment-product-figure">
-                              {item.imageUrl && <img alt={item.name} src={item.imageUrl} />}
-                            </figure>
-                            <div className="consignment-product-body">
-                              <h4 className="optimizedCheckout-contentPrimary">{`${item.quantity} x ${item.name}`}</h4>
-                              {(item.options || []).map(({ name: optionName, value, nameId }) => (
-                                <ul
-                                  className="product-options optimizedCheckout-contentSecondary"
-                                  data-test="consigment-item-product-options"
-                                  key={nameId}
-                                >
-                                  <li className="product-option">{`${optionName} ${value}`}</li>
-                                </ul>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      groupedItemsWithoutFFLEntries.map(([key, items], index) => (
-                        <div>
-                          <div className="consignment">
-                            <figure className="consignment-product-figure">
-                              {items[0].imageUrl && (
-                                <img alt={items[0].imageUrl} src={items[0].imageUrl} />
-                              )}
-                            </figure>
-                            <div className="consignment-product-body">
-                              <h5 className="optimizedCheckout-contentPrimary">
-                                {`${items.length} x ${items[0].name}`}
-                              </h5>
-                            </div>
-                          </div>
-                          {index + 1 == groupedItemsWithoutFFLEntries.length && (
-                            <AddressSelect
-                              addresses={customer.addresses}
-                              onSelectAddress={this.handleSelectAddress}
-                              onUseNewAddress={this.handleUseNewAddress}
-                              selectedAddress={
-                                items[0].consignment && items[0].consignment.shippingAddress
-                              }
-                            />
-                          )}
-                        </div>
-                      ))
-                    )}
-                  </ul>
-                </Form>
-              </div>
+            {this.state.bypassFFL ? (
+              <ShippingForm
+                {...this.props}
+                addresses={customer.addresses}
+                deinitialize={this.props.deinitializeShippingMethod}
+                initialize={this.props.initializeShippingMethod}
+                isBillingSameAsShipping={true}
+                isFloatingLabelEnabled={false}
+                isGuest={this.props.isGuest}
+                isInitialValueLoaded={true}
+                isMultiShippingMode={false}
+                onMultiShippingSubmit={this.handleMultiShippingSubmit}
+                onSingleShippingSubmit={this.handleSingleShippingSubmit}
+                onUseNewAddress={this.handleUseNewAddress}
+                shouldShowSaveAddress={!this.props.isGuest}
+                updateAddress={this.props.updateShippingAddress}
+              />
+            ) : (
+              <CustomShippingForm
+                onChangeCustomShippingField={this.onChangeCustomShippingField}
+                customShippingFirstNameError={this.state.customShippingFirstNameError}
+                customShippingLastNameError={this.state.customShippingLastNameError}
+                customShippingAddressError={this.state.customShippingAddressError}
+                customShippingCityError={this.state.customShippingCityError}
+                customShippingPostalError={this.state.customShippingPostalError}
+                customShippingFirstName={this.state.customShippingFirstName}
+                customShippingLastName={this.state.customShippingLastName}
+                customShippingAddress={this.state.customShippingAddress}
+                customShippingApartment={this.state.customShippingApartment}
+                customShippingCity={this.state.customShippingCity}
+                customShippingCompany={this.state.customShippingCompany}
+                customShippingPhone={this.state.customShippingPhone}
+                customShippingPostal={this.state.customShippingPostal}
+              />
             )}
           </div>
         )}
@@ -657,15 +803,18 @@ class DealerShipping extends React.PureComponent<
           />
         )}
 
-        <ShippingFormFooter
-          cartHasChanged={cartHasChanged}
-          isLoading={isLoading}
-          customerMessage={customerMessage}
-          onSubmit={this.handleMultiShippingSubmit}
-          shouldDisableSubmit={this.shouldDisableSubmit()}
-          shouldShowOrderComments={shouldShowOrderComments}
-          shouldShowShippingOptions={!hasUnassignedLineItems(consignments, cart.lineItems)}
-        />
+        {/* Only show ShippingFormFooter when not bypassing FFL */}
+        {!this.state.bypassFFL && (
+          <ShippingFormFooter
+            cartHasChanged={cartHasChanged}
+            isLoading={isLoading}
+            customerMessage={customerMessage}
+            onSubmit={this.handleMultiShippingSubmit}
+            shouldDisableSubmit={this.shouldDisableSubmit()}
+            shouldShowOrderComments={shouldShowOrderComments}
+            shouldShowShippingOptions={!hasUnassignedLineItems(consignments, cart.lineItems)}
+          />
+        )}
 
         {this.state.manualFflInput === true && (
           <Shipping
@@ -799,16 +948,8 @@ class DealerShipping extends React.PureComponent<
     });
   };
 
-  private handleMultiShippingSubmit: (values: MultiShippingFormValues) => void = async ({
-    orderComment,
-  }) => {
-    const { customerMessage, updateCheckout, navigateNextStep, onUnhandledError } = this.props;
-
-    if (this.state.ammoStateFFLRequired == false) {
-      if (this.validateCustomShippingFields() == false) {
-        return;
-      }
-    }
+  private handleMultiShippingSubmit = async (values: MultiShippingFormValues): Promise<void> => {
+    const { navigateNextStep, onUnhandledError } = this.props;
 
     try {
       if (customerMessage !== orderComment) {
@@ -821,7 +962,7 @@ class DealerShipping extends React.PureComponent<
     }
   };
 
-  private validateCustomShippingFields: () => void = () => {
+  private validateCustomShippingFields = () => {
     let isValid = true;
     const fields = [
       'customFirstNameInput',
@@ -841,17 +982,13 @@ class DealerShipping extends React.PureComponent<
     return isValid;
   };
 
-  private syncItems: (key: string, address: Address, data: CheckoutStoreSelector) => void = (
-    key,
-    address,
-    data,
-  ) => {
+  private syncItems = (key: string, address: Address, data: CheckoutStoreSelector): void => {
     const { items: currentItems } = this.state;
 
     const items = updateShippableItems(
       currentItems,
       {
-        updatedItemIndex: currentItems.findIndex((item: any) => item.key === key),
+        updatedItemIndex: currentItems.findIndex((item) => item.key === key),
         address,
       },
       {
@@ -862,6 +999,17 @@ class DealerShipping extends React.PureComponent<
 
     if (items) {
       this.setState({ items });
+    }
+  };
+
+  private handleSingleShippingSubmit = async (values: SingleShippingFormValues) => {
+    const { navigateNextStep, onUnhandledError, updateShippingAddress } = this.props;
+
+    try {
+      await updateShippingAddress(values.shippingAddress);
+      navigateNextStep(values.billingSameAsShipping);
+    } catch (error) {
+      onUnhandledError(error);
     }
   };
 }
