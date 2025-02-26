@@ -15,7 +15,7 @@ interface CustomShippingFormProps {
   cityInputError: boolean;
   postCodeInput: string;
   postCodeInputError: boolean;
-  onChangeCustomShippingField: (value: string, field: keyof CustomShippingFormProps) => void;
+  onChangeCustomShippingField: (value: string, fieldId: string) => void;
 }
 
 interface CustomShippingFormState {}
@@ -32,7 +32,7 @@ export default class CustomShippingForm extends React.PureComponent<
 
   onChangeField(event: React.ChangeEvent<HTMLInputElement>): void {
     const value = event.target.value;
-    const fieldId = event.target.id as keyof CustomShippingFormProps;
+    const fieldId = event.target.id;
 
     this.props.onChangeCustomShippingField(value, fieldId);
   }

@@ -278,17 +278,17 @@ class DealerShipping extends React.PureComponent<
       bypassOption: false,
       bypassFFL: false,
       createCustomerAddressError: null,
+      customFirstNameInput: '',
+      customFirstNameInputError: false,
+      customLastNameInput: '',
+      customLastNameInputError: false,
+      customCompanyInput: '',
+      customPhoneInput: '',
       customAddressLine1Input: '',
       customAddressLine1InputError: false,
       customAddressLine2Input: '',
       customCityInput: '',
       customCityInputError: false,
-      customCompanyInput: '',
-      customFirstNameInput: '',
-      customFirstNameInputError: false,
-      customLastNameInput: '',
-      customLastNameInputError: false,
-      customPhoneInput: '',
       customPostCodeInput: '',
       customPostCodeInputError: false,
       isLoading: true,
@@ -441,7 +441,8 @@ class DealerShipping extends React.PureComponent<
     });
   };
 
-  onChangeCustomShippingField = (value: string, stateKey: keyof DealerState): void => {
+  onChangeCustomShippingField = (value: string, fieldId: string): void => {
+    // Define mapping from form field IDs to state properties
     const fieldIdToStateMap = {
       firstNameInput: 'customFirstNameInput',
       lastNameInput: 'customLastNameInput',
@@ -453,31 +454,48 @@ class DealerShipping extends React.PureComponent<
       postCodeInput: 'customPostCodeInput',
     };
 
-    const stateKey = fieldIdToStateMap[fieldId];
-    const stateKeyError = `${stateKey}Error`;
+    // Map the field ID to the corresponding state property
+    const stateProperty = fieldIdToStateMap[fieldId as keyof typeof fieldIdToStateMap];
 
-    this.setState(
-      {
-        [stateKey]: value,
-        [stateKeyError]: false,
-      },
-      () => {
-        if (
-          this.state.customFirstNameInput != '' &&
-          this.state.customLastNameInput != '' &&
-          this.state.customAddressLine1Input != '' &&
-          this.state.customCityInput != '' &&
-          this.state.customPostCodeInput != ''
-        ) {
-          this.debouncedAssignShippingAddress();
-        }
-      },
-    );
+    // If no mapping exists, log a warning and return early
+    if (!stateProperty) {
+      console.warn(`No state property mapping found for field ID: ${fieldId}`);
+      return;
+    }
+
+    const statePropertyError = `${stateProperty}Error`;
+
+    // Use functional state update to ensure we're working with the latest state
+    this.setState((prevState) => {
+      // Create new state with the updated field value and reset error
+      const newState = {
+        ...prevState,
+        [stateProperty]: value,
+        [statePropertyError]: false,
+      };
+
+      // Check if all required fields have values after this update
+      const allFieldsFilled =
+        newState.customFirstNameInput !== '' &&
+        newState.customLastNameInput !== '' &&
+        newState.customAddressLine1Input !== '' &&
+        newState.customCityInput !== '' &&
+        newState.customPostCodeInput !== '';
+
+      // If all fields are filled, trigger the debounced function
+      if (allFieldsFilled) {
+        // Use setTimeout with 0 delay to ensure state is updated before the debounced function runs
+        setTimeout(() => this.debouncedAssignShippingAddress(), 0);
+      }
+
+      return newState;
+    });
   };
 
   validateSelectedState = (event: React.ChangeEvent<HTMLSelectElement>): void => {
     const { deleteConsignment, onUnhandledError } = this.props;
-    const fflRequired = this.state.ammoFFLRequiredStates.includes(event.target.value);
+    const selectedValue = event.target.value;
+    const fflRequired = this.state.ammoFFLRequiredStates.includes(selectedValue);
 
     // deletes consignments, this will unassign previously selected addresses for each line item
     if (this.props.consignments.length > 0) {
@@ -496,11 +514,11 @@ class DealerShipping extends React.PureComponent<
       });
     }
 
-    if (event.target.value == '') {
-      this.setState({ ammoStateFFLRequired: null, ammoSelectedState: event.target.value });
-    } else {
-      this.setState({ ammoStateFFLRequired: fflRequired, ammoSelectedState: event.target.value });
-    }
+    // Update state in a single call to avoid race conditions
+    this.setState({
+      ammoStateFFLRequired: selectedValue === '' ? null : fflRequired,
+      ammoSelectedState: selectedValue,
+    });
   };
 
   private shouldDisableSubmit: () => boolean = () => {
@@ -586,7 +604,9 @@ class DealerShipping extends React.PureComponent<
                   type="checkbox"
                   style={{ margin: 0 }}
                   checked={this.state.bypassFFL}
-                  onChange={() => this.setState({ bypassFFL: !this.state.bypassFFL })}
+                  onChange={() =>
+                    this.setState((prevState) => ({ bypassFFL: !prevState.bypassFFL }))
+                  }
                 />
                 <span>{this.state.bypassAnnouncement}</span>
               </label>
@@ -766,41 +786,22 @@ class DealerShipping extends React.PureComponent<
             ) : (
               <CustomShippingForm
                 onChangeCustomShippingField={this.onChangeCustomShippingField}
-                customShippingFirstNameError={this.state.customShippingFirstNameError}
-                customShippingLastNameError={this.state.customShippingLastNameError}
-                customShippingAddressError={this.state.customShippingAddressError}
-                customShippingCityError={this.state.customShippingCityError}
-                customShippingPostalError={this.state.customShippingPostalError}
-                customShippingFirstName={this.state.customShippingFirstName}
-                customShippingLastName={this.state.customShippingLastName}
-                customShippingAddress={this.state.customShippingAddress}
-                customShippingApartment={this.state.customShippingApartment}
-                customShippingCity={this.state.customShippingCity}
-                customShippingCompany={this.state.customShippingCompany}
-                customShippingPhone={this.state.customShippingPhone}
-                customShippingPostal={this.state.customShippingPostal}
+                firstNameInput={this.state.customFirstNameInput}
+                firstNameInputError={this.state.customFirstNameInputError}
+                lastNameInput={this.state.customLastNameInput}
+                lastNameInputError={this.state.customLastNameInputError}
+                companyInput={this.state.customCompanyInput}
+                phoneInput={this.state.customPhoneInput}
+                addressLine1Input={this.state.customAddressLine1Input}
+                addressLine1InputError={this.state.customAddressLine1InputError}
+                addressLine2Input={this.state.customAddressLine2Input}
+                cityInput={this.state.customCityInput}
+                cityInputError={this.state.customCityInputError}
+                postCodeInput={this.state.customPostCodeInput}
+                postCodeInputError={this.state.customPostCodeInputError}
               />
             )}
           </div>
-        )}
-
-        {this.state.ammoStateFFLRequired == false && (
-          <CustomShippingForm
-            onChangeCustomShippingField={this.onChangeCustomShippingField}
-            firstNameInput={this.state.customFirstNameInput}
-            firstNameInputError={this.state.customFirstNameInputError}
-            lastNameInput={this.state.customLastNameInput}
-            lastNameInputError={this.state.customLastNameInputError}
-            companyInput={this.state.customCompanyInput}
-            phoneInput={this.state.customPhoneInput}
-            addressLine1Input={this.state.customAddressLine1Input}
-            addressLine1InputError={this.state.customAddressLine1InputError}
-            addressLine2Input={this.state.customAddressLine2Input}
-            cityInput={this.state.customCityInput}
-            cityInputError={this.state.customCityInputError}
-            postCodeInput={this.state.customPostCodeInput}
-            postCodeInputError={this.state.customPostCodeInputError}
-          />
         )}
 
         {/* Only show ShippingFormFooter when not bypassing FFL */}
@@ -949,11 +950,11 @@ class DealerShipping extends React.PureComponent<
   };
 
   private handleMultiShippingSubmit = async (values: MultiShippingFormValues): Promise<void> => {
-    const { navigateNextStep, onUnhandledError } = this.props;
+    const { navigateNextStep, onUnhandledError, customerMessage } = this.props;
 
     try {
-      if (customerMessage !== orderComment) {
-        await updateCheckout({ customerMessage: orderComment });
+      if (customerMessage !== values.orderComment) {
+        await this.props.updateCheckout({ customerMessage: values.orderComment });
       }
 
       navigateNextStep(false);
@@ -972,34 +973,48 @@ class DealerShipping extends React.PureComponent<
       'customPostCodeInput',
     ];
 
+    // Create a combined state update object
+    const stateUpdate: Record<string, boolean> = {};
+
+    // Initialize all error states to false
+    fields.forEach((field) => {
+      stateUpdate[`${field}Error`] = false;
+    });
+
+    // Validate each field and set error states for invalid fields
     for (let stateKey of fields) {
-      if (this.state[stateKey] == '') {
-        this.setState({ [`${stateKey}Error`]: true });
+      if (!this.state[stateKey] || this.state[stateKey] === '') {
+        stateUpdate[`${stateKey}Error`] = true;
         isValid = false;
       }
     }
+
+    // Update state with all changes at once
+    this.setState(stateUpdate);
 
     return isValid;
   };
 
   private syncItems = (key: string, address: Address, data: CheckoutStoreSelector): void => {
-    const { items: currentItems } = this.state;
+    this.setState((prevState) => {
+      const items = updateShippableItems(
+        prevState.items,
+        {
+          updatedItemIndex: prevState.items.findIndex((item) => item.key === key),
+          address,
+        },
+        {
+          cart: data.getCart(),
+          consignments: data.getConsignments(),
+        },
+      );
 
-    const items = updateShippableItems(
-      currentItems,
-      {
-        updatedItemIndex: currentItems.findIndex((item) => item.key === key),
-        address,
-      },
-      {
-        cart: data.getCart(),
-        consignments: data.getConsignments(),
-      },
-    );
+      if (items) {
+        return { items };
+      }
 
-    if (items) {
-      this.setState({ items });
-    }
+      return null;
+    });
   };
 
   private handleSingleShippingSubmit = async (values: SingleShippingFormValues) => {
@@ -1012,6 +1027,16 @@ class DealerShipping extends React.PureComponent<
       onUnhandledError(error);
     }
   };
+
+  componentWillUnmount(): void {
+    // Cancel any pending debounced calls to prevent memory leaks
+    if (
+      this.debouncedAssignShippingAddress &&
+      typeof this.debouncedAssignShippingAddress.cancel === 'function'
+    ) {
+      this.debouncedAssignShippingAddress.cancel();
+    }
+  }
 }
 
 export function mapToDealerShippingProps({
