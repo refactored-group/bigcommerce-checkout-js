@@ -48,6 +48,7 @@ import CountryDropdown from './CountryDropdown';
 
 import './DealerShipping.scss';
 
+// Lazy-loaded components
 const Shipping = lazy(() =>
   retry(
     () =>
@@ -108,6 +109,18 @@ const CustomShippingForm = lazy(() =>
   ),
 );
 
+// ----------------------
+// Helper for FFL-required states
+// ----------------------
+const FFL_REQUIRED_STATES = ['CA'];
+
+function isFFLRequiredState(stateCode: string): boolean {
+  return FFL_REQUIRED_STATES.includes(stateCode);
+}
+
+// ----------------------
+// Interfaces
+// ----------------------
 export interface MultiShippingFormValues {
   orderComment: string;
 }
@@ -178,7 +191,7 @@ interface DealerState {
   announcement: any;
   multiShipment: any;
   ammoFFLRequiredStates: any;
-  ammoStateFFLRequired: boolean;
+  ammoStateFFLRequired: boolean | null;
   ammoSelectedState: string;
   customFirstNameInput: string;
   customFirstNameInputError: boolean;
@@ -196,26 +209,24 @@ interface DealerState {
   withAmmoSubscription: boolean;
 }
 
+// ----------------------
+// Main Component
+// ----------------------
 class DealerShipping extends React.PureComponent<
   DealerProps & WithCheckoutShippingProps,
   DealerState
 > {
   static getDerivedStateFromProps(
-    {
-      cart,
-      consignments,
-      fflConsignmentItems,
-      ammoConsignmentItems,
-    }: DealerProps & WithCheckoutShippingProps,
+    { cart, consignments }: DealerProps & WithCheckoutShippingProps,
     state: DealerState,
   ) {
+    // Whenever cart items change, recalculate items
     if (!state || !state.items || getShippableItemsCount(cart) !== state.items.length) {
       return {
         ...state,
         items: getShippableLineItems(cart, consignments),
       };
     }
-
     return null;
   }
 
@@ -270,15 +281,14 @@ class DealerShipping extends React.PureComponent<
         countryCode: 'US',
         localizedCountry: 'United States',
       };
-      const lineItems = this.props.cart.lineItems.physicalItems.map((item) => {
-        let container = {};
-        container.itemId = item.id;
-        container.quantity = item.quantity;
-        return container;
-      });
+      const lineItems = this.props.cart.lineItems.physicalItems.map((item) => ({
+        itemId: item.id,
+        quantity: item.quantity,
+      }));
+
       await assignItem({
         address,
-        lineItems: lineItems,
+        lineItems,
       });
     }, 500);
 
@@ -319,9 +329,74 @@ class DealerShipping extends React.PureComponent<
     }
   }
 
+  // ----------------------
+  // FFL Logic
+  // ----------------------
+
+  /**
+   * If the user is subscribed for ammo AND the selected state requires FFL,
+   * treat ammo as FFL; otherwise, keep ammo separate so it appears in non-FFL section.
+   */
+  private getFFLItems() {
+    const { ammoConsignmentItems, fflConsignmentItems } = this.props;
+    const { withAmmoSubscription, ammoStateFFLRequired } = this.state;
+
+    // If there are firearms and ammo in the cart with an ammo subscription,
+    // mark ammo as FFL required without state checks
+    if (withAmmoSubscription && fflConsignmentItems.length > 0 && ammoConsignmentItems.length > 0) {
+      return fflConsignmentItems.concat(ammoConsignmentItems);
+    }
+
+    // Original logic for other cases
+    if (withAmmoSubscription && ammoStateFFLRequired) {
+      return fflConsignmentItems.concat(ammoConsignmentItems);
+    }
+    return fflConsignmentItems;
+  }
+
+  /**
+   * Returns the consignment that contains any items flagged as FFL.
+   */
+  private getFFLConsignment(): Consignment | undefined {
+    const { consignments } = this.props;
+    const fflItems = this.getFFLItems();
+
+    return consignments.find((consignment) =>
+      fflItems.some((fflItem) => consignment.lineItemIds.includes(fflItem.itemId)),
+    );
+  }
+
+  /**
+   * Checks if the cart contains any firearm (FFL) items
+   */
+  private hasFirearms(): boolean {
+    const { fflConsignmentItems } = this.props;
+    return fflConsignmentItems.length > 0;
+  }
+
+  /**
+   * Checks if the cart contains only ammunition (no firearms)
+   */
+  private hasOnlyAmmunition(): boolean {
+    const { fflConsignmentItems, ammoConsignmentItems } = this.props;
+    return fflConsignmentItems.length === 0 && ammoConsignmentItems.length > 0;
+  }
+
+  /**
+   * Checks if the cart contains any FFL items (firearms, ammunition in FFL-required states,
+   * or ammunition when there are firearms in the cart with an ammo subscription)
+   */
+  private hasAnyFflItems(): boolean {
+    const fflItems = this.getFFLItems();
+    return fflItems.length > 0;
+  }
+
+  // ----------------------
+  // Event Handlers
+  // ----------------------
+
   handleManualFFLInput: () => void = () => {
     const { manualFflInput } = this.state;
-
     this.setState({
       manualFflInput: !manualFflInput,
       selectedDealer: null,
@@ -343,12 +418,10 @@ class DealerShipping extends React.PureComponent<
 
     const { assignItem, getFields, onUnhandledError } = this.props;
 
-    const allCartItems = this.state.items.map((item) => {
-      let container = {};
-      container.itemId = item.id;
-      container.quantity = item.quantity;
-      return container;
-    });
+    const allCartItems = this.state.items.map((item: any) => ({
+      itemId: item.id,
+      quantity: item.quantity,
+    }));
 
     const fflItems = this.getFFLItems();
     const consignment = {
@@ -396,11 +469,11 @@ class DealerShipping extends React.PureComponent<
       },
       () => {
         if (
-          this.state.customFirstNameInput != '' &&
-          this.state.customLastNameInput != '' &&
-          this.state.customAddressLine1Input != '' &&
-          this.state.customCityInput != '' &&
-          this.state.customPostCodeInput != ''
+          this.state.customFirstNameInput &&
+          this.state.customLastNameInput &&
+          this.state.customAddressLine1Input &&
+          this.state.customCityInput &&
+          this.state.customPostCodeInput
         ) {
           this.debouncedAssignCustomShippingAddress();
         }
@@ -408,56 +481,101 @@ class DealerShipping extends React.PureComponent<
     );
   };
 
-  validateSelectedState: (event: any) => void = () => {
-    const { deleteConsignment, onUnhandledError } = this.props;
-    const fflRequired = this.state.ammoFFLRequiredStates.includes(event.target.value);
-
-    // deletes consignments, this will unassign previously selected addresses for each line item
-    if (this.props.consignments.length > 0) {
-      let lineItems = this.props.consignments.map((item) => {
-        let container = {};
-        container.shippingAddress = item.address;
-        container.itemId = item.id;
-        return container;
-      });
-      lineItems.forEach((item) => {
-        try {
-          deleteConsignment(item.itemId);
-        } catch (e) {
-          onUnhandledError(new UnassignItemError(e as any));
-        }
-      });
-    }
-
-    if (event.target.value == '') {
-      this.setState({ ammoStateFFLRequired: null, ammoSelectedState: event.target.value });
-    } else {
-      this.setState({ ammoStateFFLRequired: fflRequired, ammoSelectedState: event.target.value });
-    }
-  };
-
-  private shouldDisableSubmit: () => boolean = () => {
-    const { isLoading, consignments, isValid } = this.props;
-
-    const { isUpdatingShippingData } = this.state;
-
-    if (!isValid) {
-      return false;
-    }
-
-    return isLoading || isUpdatingShippingData || !hasSelectedShippingOptions(consignments);
-  };
-
-  // group ffl items with ammo items only if the customer has ammo subscription
-  private getFFLItems() {
-    const { ammoConsignmentItems, fflConsignmentItems } = this.props;
+  private validateAndUnassignState = async (stateCode: string): Promise<void> => {
+    const {
+      deleteConsignment,
+      onUnhandledError,
+      consignments,
+      fflConsignmentItems,
+      ammoConsignmentItems,
+    } = this.props;
     const { withAmmoSubscription } = this.state;
 
-    return withAmmoSubscription
-      ? fflConsignmentItems.concat(ammoConsignmentItems)
-      : fflConsignmentItems;
-  }
+    // Skip state validation if there are firearms and ammo with an ammo subscription
+    const skipStateValidation =
+      withAmmoSubscription && fflConsignmentItems.length > 0 && ammoConsignmentItems.length > 0;
 
+    const fflRequired = skipStateValidation || this.state.ammoFFLRequiredStates.includes(stateCode);
+
+    if (consignments.length > 0) {
+      const deletePromises = consignments.map((consignment) =>
+        deleteConsignment(consignment.id).catch((error) =>
+          onUnhandledError(new UnassignItemError(error as any)),
+        ),
+      );
+      await Promise.all(deletePromises);
+    }
+
+    // Wrap setState in a promise so you can await it
+    return new Promise((resolve) => {
+      this.setState(
+        {
+          ammoStateFFLRequired: stateCode === '' ? null : fflRequired,
+          ammoSelectedState: stateCode,
+        },
+        resolve,
+      );
+    });
+  };
+
+  validateSelectedState: (event: any) => void = async (event) => {
+    const stateCode = event.target.value;
+    await this.validateAndUnassignState(stateCode);
+  };
+
+  /**
+   * Callback for when a user selects a saved address for a non-FFL item
+   * or tries to assign items that might be FFL if in a certain state.
+   */
+  private handleSelectAddress: (
+    address: Address,
+    itemId: string,
+    itemKey: string,
+  ) => Promise<void> = async (address, itemId, itemKey) => {
+    const { assignItem, onUnhandledError, getFields, ammoConsignmentItems, customer } = this.props;
+
+    if (!isValidAddress(address, getFields(address.countryCode))) {
+      return onUnhandledError(new AssignItemInvalidAddressError());
+    }
+
+    const isLoggedIn = !customer.isGuest;
+    if (isLoggedIn && ammoConsignmentItems.length > 0 && !this.hasFirearms()) {
+      await this.validateAndUnassignState(address.stateOrProvinceCode);
+    }
+
+    // Get FFL items AFTER validating the state, as the validation may update ammoStateFFLRequired
+    const fflItems = this.getFFLItems();
+    const fflItemsIds = fflItems.map((item) => item.itemId);
+    const cartLineItems = this.props.cart.lineItems.physicalItems;
+
+    // Define nonFFLItems first
+    const nonFFLItems = cartLineItems.filter(
+      (item) => !fflItemsIds.includes(item.id) && item.parentId == null,
+    );
+
+    // If there are no non-FFL items to assign, return early
+    if (nonFFLItems.length === 0) {
+      return;
+    }
+
+    const nonFFLItemsMap = nonFFLItems.map((item) => ({
+      itemId: item.id,
+      quantity: item.quantity,
+    }));
+
+    try {
+      await assignItem({
+        address,
+        lineItems: nonFFLItemsMap,
+      });
+    } catch (error) {
+      onUnhandledError(new AssignItemFailedError(error as any));
+    }
+  };
+
+  // ----------------------
+  // Render
+  // ----------------------
   render() {
     const {
       ammoConsignmentItems,
@@ -476,45 +594,45 @@ class DealerShipping extends React.PureComponent<
       shouldShowOrderComments,
     } = this.props;
 
-    const items = getShippableLineItems(cart, consignments);
+    // All shippable items
+    const allItems = getShippableLineItems(cart, consignments);
+
+    // Determine which items are FFL (including ammo if ammoStateFFLRequired)
     const fflItems = this.getFFLItems();
-    const itemsWithoutFFL = items.filter(
-      (item) => !fflItems.some((fflItem: any) => item.id === fflItem.itemId),
-    );
-
-    const groupedItemsWithoutFFL = _.groupBy(itemsWithoutFFL, (item) => item.productId);
-
-    const groupedItemsWithoutFFLEntries = Object.entries(groupedItemsWithoutFFL);
-
-    const itemsWithFFL = items.filter((item) =>
+    const itemsWithFFL = allItems.filter((item) =>
       fflItems.some((fflItem: any) => item.id === fflItem.itemId),
     );
+    const groupedItemsWithFFLEntries = Object.entries(
+      _.groupBy(itemsWithFFL, (item) => item.productId),
+    );
 
-    const groupeditemsWithFFL = _.groupBy(itemsWithFFL, (item) => item.productId);
+    // Non-FFL items (including ammo if ammoStateFFLRequired is false)
+    const itemsWithoutFFL = allItems.filter(
+      (item) => !fflItems.some((fflItem: any) => item.id === fflItem.itemId),
+    );
+    const groupedItemsWithoutFFLEntries = Object.entries(
+      _.groupBy(itemsWithoutFFL, (item) => item.productId),
+    );
 
-    const groupedItemsWithFFLEntries = Object.entries(groupeditemsWithFFL);
-
-    const fflConsignment = consignments.filter((item) =>
-      fflItems.some((fflItem: any) => item.lineItemIds.includes(fflItem.itemId)),
-    )[0];
-
+    // Grab the consignment that contains FFL items (if any)
+    const fflConsignment = this.getFFLConsignment();
     const { itemAddingAddress } = this.state;
 
     return (
       <section className="ffl-section checkout-form">
-        {fflConsignmentItems.length == 0 &&
-          ammoConsignmentItems.length > 0 &&
-          this.state.withAmmoSubscription && (
-            <StatesDropdown validateSelectedState={this.validateSelectedState} />
-          )}
+        {/* If there's no firearm but we have ammo items, show the state dropdown if subscription is active */}
+        {this.hasOnlyAmmunition() && this.state.withAmmoSubscription && customer.isGuest && (
+          <StatesDropdown validateSelectedState={this.validateSelectedState} />
+        )}
 
-        {(this.state.ammoStateFFLRequired || fflConsignmentItems.length > 0) && (
-          <div>
+        {/* ========== FFL Consignment Area ========== */}
+        {this.hasFirearms() || (this.hasOnlyAmmunition() && this.state.ammoStateFFLRequired) ? (
+          <div className="ffl-consignment-area">
             {this.state.manualFflInput === false &&
-              (this.state.selectedDealer == null || !fflConsignment) && (
+              (!this.state.selectedDealer || !fflConsignment) && (
                 <div className="alertBox alertBox--error alertBox--font-color-black">
                   <div className="alertBox-column alertBox-icon">
-                    <div className="icon"></div>
+                    <div className="icon" />
                   </div>
                   {groupedItemsWithFFLEntries.map(([key, items]) => (
                     <li key={items[0].key}>
@@ -534,7 +652,7 @@ class DealerShipping extends React.PureComponent<
                 </div>
               )}
 
-            {this.state.selectedDealer != null && fflConsignment && (
+            {this.state.selectedDealer && fflConsignment && (
               <div className="consignment-product-body alertBox--success shipping">
                 {groupedItemsWithFFLEntries.map(([key, items]) => (
                   <li key={items[0].key}>
@@ -554,47 +672,49 @@ class DealerShipping extends React.PureComponent<
                 className="button button--primary optimizedCheckout-buttonPrimary"
                 onClick={this.toggleMapSelector}
               >
-                {this.state.selectedDealer != null && fflConsignment && (
+                {this.state.selectedDealer && fflConsignment ? (
                   <TranslatedString id="shipping.ffl_change_dealer" />
-                )}
-                {(this.state.selectedDealer == null || !fflConsignment) && (
+                ) : (
                   <TranslatedString id="shipping.ffl_select_dealer" />
                 )}
               </button>
             </div>
+          </div>
+        ) : null}
 
+        {/* ========== Non-FFL Consignment Area ========== */}
+        {groupedItemsWithoutFFLEntries.length > 0 && this.hasAnyFflItems() && (
+          <div className="non-ffl-consignment-area">
             {!this.state.isLoading && (
-              <div>
-                {
-                  <AddressFormModal
-                    countries={countries}
-                    countriesWithAutocomplete={countriesWithAutocomplete}
-                    defaultCountryCode={defaultCountryCode}
-                    getFields={getFields}
-                    googleMapsApiKey={googleMapsApiKey}
-                    isLoading={isLoading}
-                    isOpen={!!itemAddingAddress}
-                    onRequestClose={this.handleCloseAddAddressForm}
-                    onSaveAddress={this.handleSaveAddress}
-                  />
-                }
-
+              <>
+                <AddressFormModal
+                  countries={countries}
+                  countriesWithAutocomplete={countriesWithAutocomplete}
+                  defaultCountryCode={defaultCountryCode}
+                  getFields={getFields}
+                  googleMapsApiKey={googleMapsApiKey}
+                  isLoading={isLoading}
+                  isOpen={!!itemAddingAddress}
+                  onRequestClose={this.handleCloseAddAddressForm}
+                  onSaveAddress={this.handleSaveAddress}
+                />
                 <Form>
                   <ul className="consignmentList">
                     {this.state.multiShipment ? (
                       <div className="multiShip-text">
                         {itemsWithoutFFL.length > 0 && 'Other items in cart will also ship to FFL'}
                         {itemsWithoutFFL.map((item) => (
-                          <div className="consignment">
+                          <div className="consignment" key={item.key}>
                             <figure className="consignment-product-figure">
                               {item.imageUrl && <img alt={item.name} src={item.imageUrl} />}
                             </figure>
                             <div className="consignment-product-body">
-                              <h4 className="optimizedCheckout-contentPrimary">{`${item.quantity} x ${item.name}`}</h4>
+                              <h4 className="optimizedCheckout-contentPrimary">
+                                {`${item.quantity} x ${item.name}`}
+                              </h4>
                               {(item.options || []).map(({ name: optionName, value, nameId }) => (
                                 <ul
                                   className="product-options optimizedCheckout-contentSecondary"
-                                  data-test="consigment-item-product-options"
                                   key={nameId}
                                 >
                                   <li className="product-option">{`${optionName} ${value}`}</li>
@@ -606,7 +726,7 @@ class DealerShipping extends React.PureComponent<
                       </div>
                     ) : (
                       groupedItemsWithoutFFLEntries.map(([key, items], index) => (
-                        <div>
+                        <div key={key}>
                           <div className="consignment">
                             <figure className="consignment-product-figure">
                               {items[0].imageUrl && (
@@ -619,50 +739,83 @@ class DealerShipping extends React.PureComponent<
                               </h5>
                             </div>
                           </div>
-                          {index + 1 == groupedItemsWithoutFFLEntries.length && (
-                            <AddressSelect
-                              addresses={customer.addresses}
-                              onSelectAddress={this.handleSelectAddress}
-                              onUseNewAddress={this.handleUseNewAddress}
-                              selectedAddress={
-                                items[0].consignment && items[0].consignment.shippingAddress
-                              }
-                            />
-                          )}
+                          {index + 1 === groupedItemsWithoutFFLEntries.length &&
+                            !(!customer.isGuest && this.hasOnlyAmmunition()) && (
+                              <AddressSelect
+                                addresses={customer.addresses}
+                                onSelectAddress={this.handleSelectAddress}
+                                onUseNewAddress={this.handleUseNewAddress}
+                                selectedAddress={
+                                  items[0].consignment && items[0].consignment.shippingAddress
+                                }
+                              />
+                            )}
                         </div>
                       ))
                     )}
                   </ul>
                 </Form>
-              </div>
+              </>
             )}
           </div>
         )}
 
-        {this.state.ammoStateFFLRequired == false && (
-          <CustomShippingForm
-            onChangeCustomShippingField={this.onChangeCustomShippingField}
-            firstNameInput={this.state.customFirstNameInput}
-            firstNameInputError={this.state.customFirstNameInputError}
-            lastNameInput={this.state.customLastNameInput}
-            lastNameInputError={this.state.customLastNameInputError}
-            companyInput={this.state.customCompanyInput}
-            phoneInput={this.state.customPhoneInput}
-            addressLine1Input={this.state.customAddressLine1Input}
-            addressLine1InputError={this.state.customAddressLine1InputError}
-            addressLine2Input={this.state.customAddressLine2Input}
-            cityInput={this.state.customCityInput}
-            cityInputError={this.state.customCityInputError}
-            postCodeInput={this.state.customPostCodeInput}
-            postCodeInputError={this.state.customPostCodeInputError}
-            countryDropdown={
-              <CountryDropdown
-                countries={countries}
-                selectedCountry="US" // Default to US
-              />
-            }
-          />
+        {/* ========== Address Selector for Logged-in Users with Ammo ========== */}
+        {!customer.isGuest && this.hasOnlyAmmunition() && (
+          <div className="ammo-address-selector">
+            <legend className="optimizedCheckout-headingSecondary" style={{ marginBottom: '5px' }}>
+              Select Shipping Address
+            </legend>
+            <AddressFormModal
+              countries={countries}
+              countriesWithAutocomplete={countriesWithAutocomplete}
+              defaultCountryCode={defaultCountryCode}
+              getFields={getFields}
+              googleMapsApiKey={googleMapsApiKey}
+              isLoading={isLoading}
+              isOpen={!!itemAddingAddress}
+              onRequestClose={this.handleCloseAddAddressForm}
+              onSaveAddress={this.handleSaveAddress}
+            />
+            <AddressSelect
+              addresses={customer.addresses}
+              onSelectAddress={this.handleSelectAddress}
+              onUseNewAddress={this.handleUseNewAddress}
+              selectedAddress={
+                ammoConsignmentItems.length > 0 &&
+                consignments.length > 0 &&
+                consignments[0].shippingAddress
+              }
+            />
+          </div>
         )}
+
+        {/* ========== Custom Shipping Form (non-FFL) ========== */}
+        {this.state.ammoStateFFLRequired === false &&
+          !(!customer.isGuest && this.hasOnlyAmmunition()) && (
+            <CustomShippingForm
+              onChangeCustomShippingField={this.onChangeCustomShippingField}
+              firstNameInput={this.state.customFirstNameInput}
+              firstNameInputError={this.state.customFirstNameInputError}
+              lastNameInput={this.state.customLastNameInput}
+              lastNameInputError={this.state.customLastNameInputError}
+              companyInput={this.state.customCompanyInput}
+              phoneInput={this.state.customPhoneInput}
+              addressLine1Input={this.state.customAddressLine1Input}
+              addressLine1InputError={this.state.customAddressLine1InputError}
+              addressLine2Input={this.state.customAddressLine2Input}
+              cityInput={this.state.customCityInput}
+              cityInputError={this.state.customCityInputError}
+              postCodeInput={this.state.customPostCodeInput}
+              postCodeInputError={this.state.customPostCodeInputError}
+              countryDropdown={
+                <CountryDropdown
+                  countries={countries}
+                  selectedCountry="US" // Default to US
+                />
+              }
+            />
+          )}
 
         <ShippingFormFooter
           cartHasChanged={cartHasChanged}
@@ -674,7 +827,7 @@ class DealerShipping extends React.PureComponent<
           shouldShowShippingOptions={!hasUnassignedLineItems(consignments, cart.lineItems)}
         />
 
-        {this.state.manualFflInput === true && (
+        {this.state.manualFflInput && (
           <Shipping
             cartHasChanged={this.props.cartHasChanged}
             isMultiShippingMode={this.props.isMultiShippingMode}
@@ -687,7 +840,7 @@ class DealerShipping extends React.PureComponent<
           />
         )}
 
-        {this.props.storeHash != '' && (
+        {this.props.storeHash !== '' && (
           <Locator
             storeHash={this.props.storeHash}
             showLocator={this.state.showLocator}
@@ -739,46 +892,6 @@ class DealerShipping extends React.PureComponent<
     }
   };
 
-  private handleSelectAddress: (
-    address: Address,
-    itemId: string,
-    itemKey: string,
-  ) => Promise<void> = async (address, itemId, itemKey) => {
-    const { assignItem, onUnhandledError, getFields } = this.props;
-    const fflItems = this.getFFLItems();
-    const fflItemsIds = fflItems.map((item) => {
-      return item.itemId;
-    });
-    const cartLineItems = this.props.cart.lineItems.physicalItems;
-
-    // do not include line items with parentID, BigCommerce will automatically assign the address selected from the parent item
-    const nonFFLItems = cartLineItems.filter(
-      (item) => !fflItemsIds.includes(item.id) && item.parentId == null,
-    );
-
-    const nonFFLItemsMap = nonFFLItems.map((item) => {
-      let container = {};
-      container.itemId = item.id;
-      container.quantity = item.quantity;
-      return container;
-    });
-
-    if (!isValidAddress(address, getFields(address.countryCode))) {
-      return onUnhandledError(new AssignItemInvalidAddressError());
-    }
-
-    try {
-      const { data } = await assignItem({
-        address,
-        lineItems: nonFFLItemsMap,
-      });
-    } catch (error) {
-      if (error instanceof Error) {
-        onUnhandledError(new AssignItemFailedError(error));
-      }
-    }
-  };
-
   private handleSaveAddress: (address: AddressFormValues) => void = async (address) => {
     const { createCustomerAddress } = this.props;
     const { itemAddingAddress } = this.state;
@@ -809,10 +922,18 @@ class DealerShipping extends React.PureComponent<
   private handleMultiShippingSubmit: (values: MultiShippingFormValues) => void = async ({
     orderComment,
   }) => {
-    const { customerMessage, updateCheckout, navigateNextStep, onUnhandledError } = this.props;
+    const { customerMessage, updateCheckout, navigateNextStep, onUnhandledError, customer } =
+      this.props;
 
-    if (this.state.ammoStateFFLRequired == false) {
-      if (this.validateCustomShippingFields() == false) {
+    // Only validate custom shipping fields if:
+    // 1. Ammunition doesn't require FFL shipping (ammoStateFFLRequired is false)
+    // 2. We're not in the case of a logged-in user with only ammunition in cart
+    // (In those cases, we use saved addresses or FFL dealers instead of the custom form)
+    if (
+      this.state.ammoStateFFLRequired === false &&
+      !(customer.isGuest === false && this.hasOnlyAmmunition())
+    ) {
+      if (!this.validateCustomShippingFields()) {
         return;
       }
     }
@@ -828,7 +949,7 @@ class DealerShipping extends React.PureComponent<
     }
   };
 
-  private validateCustomShippingFields: () => void = () => {
+  private validateCustomShippingFields: () => boolean = () => {
     let isValid = true;
     const fields = [
       'customFirstNameInput',
@@ -838,8 +959,8 @@ class DealerShipping extends React.PureComponent<
       'customPostCodeInput',
     ];
 
-    for (let stateKey of fields) {
-      if (this.state[stateKey] == '') {
+    for (const stateKey of fields) {
+      if (!this.state[stateKey]) {
         this.setState({ [`${stateKey}Error`]: true });
         isValid = false;
       }
@@ -871,8 +992,22 @@ class DealerShipping extends React.PureComponent<
       this.setState({ items });
     }
   };
+
+  private shouldDisableSubmit: () => boolean = () => {
+    const { isLoading, consignments, isValid } = this.props;
+    const { isUpdatingShippingData } = this.state;
+
+    if (isValid === false) {
+      return false;
+    }
+
+    return isLoading || isUpdatingShippingData || !hasSelectedShippingOptions(consignments);
+  };
 }
 
+// ----------------------
+// mapToDealerShippingProps
+// ----------------------
 export function mapToDealerShippingProps({
   checkoutService,
   checkoutState,
