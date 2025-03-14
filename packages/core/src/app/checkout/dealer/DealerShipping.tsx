@@ -497,6 +497,9 @@ class DealerShipping extends React.PureComponent<
 
     const fflRequired = skipStateValidation || this.state.ammoFFLRequiredStates.includes(stateCode);
 
+    // Check if we're transitioning from FFL required to non-FFL required
+    const wasFFLRequired = this.state.ammoStateFFLRequired;
+
     if (consignments.length > 0) {
       const deletePromises = consignments.map((consignment) =>
         deleteConsignment(consignment.id).catch((error) =>
@@ -508,14 +511,40 @@ class DealerShipping extends React.PureComponent<
 
     // Wrap setState in a promise so you can await it
     return new Promise((resolve) => {
-      this.setState(
-        {
-          ammoStateFFLRequired: stateCode === '' ? null : fflRequired,
-          ammoSelectedState: stateCode,
-        },
-        resolve,
-      );
+      const newState: Partial<DealerState> = {
+        ammoStateFFLRequired: stateCode === '' ? null : fflRequired,
+        ammoSelectedState: stateCode,
+      };
+
+      // If transitioning from FFL required to non-FFL required, clear the shipping form
+      if (wasFFLRequired === true && !fflRequired) {
+        Object.assign(newState, this.getClearedCustomShippingFields());
+      }
+
+      this.setState(newState as DealerState, resolve);
     });
+  };
+
+  /**
+   * Helper function to get an object with all custom shipping fields cleared
+   * Can be reused anywhere we need to reset the shipping form
+   */
+  private getClearedCustomShippingFields = (): Partial<DealerState> => {
+    return {
+      customFirstNameInput: '',
+      customFirstNameInputError: false,
+      customLastNameInput: '',
+      customLastNameInputError: false,
+      customCompanyInput: '',
+      customPhoneInput: '',
+      customAddressLine1Input: '',
+      customAddressLine1InputError: false,
+      customAddressLine2Input: '',
+      customCityInput: '',
+      customCityInputError: false,
+      customPostCodeInput: '',
+      customPostCodeInputError: false,
+    };
   };
 
   validateSelectedState: (event: any) => void = async (event) => {
