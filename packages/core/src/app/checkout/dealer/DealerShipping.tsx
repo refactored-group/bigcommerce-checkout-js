@@ -550,7 +550,11 @@ class DealerShipping extends React.PureComponent<
   ) => Promise<void> = async (address, itemId, itemKey) => {
     const { assignItem, onUnhandledError, getFields, ammoConsignmentItems, customer } = this.props;
 
+    // Set loading state at the beginning to prevent flashing
+    this.setState({ isLoading: true });
+
     if (!isValidAddress(address, getFields(address.countryCode))) {
+      this.setState({ isLoading: false });
       return onUnhandledError(new AssignItemInvalidAddressError());
     }
 
@@ -571,6 +575,7 @@ class DealerShipping extends React.PureComponent<
 
     // If there are no non-FFL items to assign, return early
     if (nonFFLItems.length === 0) {
+      this.setState({ isLoading: false });
       return;
     }
 
@@ -586,6 +591,8 @@ class DealerShipping extends React.PureComponent<
       });
     } catch (error) {
       onUnhandledError(new AssignItemFailedError(error as any));
+    } finally {
+      this.setState({ isLoading: false });
     }
   };
 
@@ -795,6 +802,7 @@ class DealerShipping extends React.PureComponent<
               onSelectAddress={this.handleSelectAddress}
               onUseNewAddress={this.handleUseNewAddress}
               selectedAddress={
+                !isLoading &&
                 ammoConsignmentItems.length > 0 &&
                 consignments.length > 0 &&
                 consignments[0].shippingAddress
