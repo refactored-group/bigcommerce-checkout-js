@@ -194,6 +194,9 @@ interface DealerState {
   customPostCodeInput: string;
   customPostCodeInputError: boolean;
   withAmmoSubscription: boolean;
+  bypassFFL: boolean;
+  bypassOption: boolean;
+  bypassText: string;
 }
 
 // ----------------------
@@ -250,6 +253,10 @@ class DealerShipping extends React.PureComponent<
       selectedDealer: null,
       showLocator: false,
       withAmmoSubscription: false,
+      bypassFFL: false,
+      bypassOption: false,
+      bypassText:
+        "Manually enter your FFL's address and contact us with your FFL's documents after placing the order.",
     };
 
     this.debouncedAssignCustomShippingAddress = debounce(async () => {
@@ -299,6 +306,8 @@ class DealerShipping extends React.PureComponent<
           isLoading: false,
           ammoFFLRequiredStates: merchantStates.map((ms) => ms.state.code),
           withAmmoSubscription: data.with_ammo_subscription,
+          bypassOption: data.bypass_option,
+          bypassText: data.bypass_text,
         });
       })
       .catch(console.log);
@@ -320,11 +329,11 @@ class DealerShipping extends React.PureComponent<
   // FFL Logic
   // ----------------------
 
-  /**
-   * If the user is subscribed for ammo AND the selected state requires FFL,
-   * treat ammo as FFL; otherwise, keep ammo separate so it appears in non-FFL section.
-   */
   private getFFLItems() {
+    if (this.state.bypassFFL) {
+      return [];
+    }
+
     const { ammoConsignmentItems, fflConsignmentItems } = this.props;
     const { withAmmoSubscription, ammoStateFFLRequired } = this.state;
 
@@ -362,6 +371,14 @@ class DealerShipping extends React.PureComponent<
   }
 
   /**
+   * Checks if the cart contains any ammunition items
+   */
+  private hasAmmunition(): boolean {
+    const { ammoConsignmentItems } = this.props;
+    return ammoConsignmentItems.length > 0;
+  }
+
+  /**
    * Checks if the cart contains only ammunition (no firearms)
    */
   private hasOnlyAmmunition(): boolean {
@@ -381,6 +398,34 @@ class DealerShipping extends React.PureComponent<
   // ----------------------
   // Event Handlers
   // ----------------------
+
+  /**
+   * When the user toggles the bypass checkbox, we clear all consignments
+   * and set the bypassFFL flag to true. Once bypassed, the customer cannot revert.
+   */
+  private handleBypassFFLToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const { consignments, deleteConsignment, onUnhandledError } = this.props;
+      try {
+        // First, delete all existing consignments
+        await Promise.all(
+          consignments.map((consignment) =>
+            deleteConsignment(consignment.id).catch((error) =>
+              onUnhandledError(new UnassignItemError(error as any)),
+            ),
+          ),
+        );
+
+        // Set state to enable bypass mode and disable multi-shipment
+        this.setState({
+          bypassFFL: true,
+          multiShipment: false,
+        });
+      } catch (error) {
+        onUnhandledError(new UnassignItemError(error as any));
+      }
+    }
+  };
 
   handleManualFFLInput: () => void = () => {
     const { manualFflInput } = this.state;
@@ -634,19 +679,40 @@ class DealerShipping extends React.PureComponent<
     return (
       <section className="ffl-section checkout-form">
         {/* If there's no firearm but we have ammo items, show the state dropdown if subscription is active */}
-        {this.hasOnlyAmmunition() && this.state.withAmmoSubscription && customer.isGuest && (
-          <StatesDropdown validateSelectedState={this.validateSelectedState} />
-        )}
+        {this.hasOnlyAmmunition() &&
+          this.state.withAmmoSubscription &&
+          customer.isGuest &&
+          !this.state.bypassFFL && (
+            <StatesDropdown validateSelectedState={this.validateSelectedState} />
+          )}
 
         {/* ========== FFL Consignment Area ========== */}
         {this.hasFirearms() || (this.hasOnlyAmmunition() && this.state.ammoStateFFLRequired) ? (
           <div className="ffl-consignment-area">
+            {/* Bypass checkbox appears inside FFL UI only if bypassOption is true */}
+            {this.state.bypassOption && (
+              <div
+                className="bypass-ffl-toggle"
+                style={{ display: 'flex', alignItems: 'center', marginBottom: '5px' }}
+              >
+                <input
+                  type="checkbox"
+                  id="bypassFFL"
+                  checked={this.state.bypassFFL}
+                  onChange={this.handleBypassFFLToggle}
+                  disabled={this.state.bypassFFL}
+                  style={{ margin: '0 8px 0 0' }}
+                />
+                <label htmlFor="bypassFFL" id="bypassFFL-label" style={{ margin: 0 }}>
+                  {this.state.bypassText}
+                </label>
+              </div>
+            )}
+
             {this.state.manualFflInput === false &&
-              (!this.state.selectedDealer || !fflConsignment) && (
+              (!this.state.selectedDealer || !fflConsignment) &&
+              !this.state.bypassFFL && (
                 <div className="alertBox alertBox--error alertBox--font-color-black">
-                  <div className="alertBox-column alertBox-icon">
-                    <div className="icon" />
-                  </div>
                   {groupedItemsWithFFLEntries.map(([key, items]) => (
                     <li key={items[0].key}>
                       <ItemFFL item={items[0]} quantity={items.length} />
@@ -679,19 +745,22 @@ class DealerShipping extends React.PureComponent<
               </div>
             )}
 
-            <div className="form-action">
-              <button
-                type="button"
-                className="button button--primary optimizedCheckout-buttonPrimary"
-                onClick={this.toggleMapSelector}
-              >
-                {this.state.selectedDealer && fflConsignment ? (
-                  <TranslatedString id="shipping.ffl_change_dealer" />
-                ) : (
-                  <TranslatedString id="shipping.ffl_select_dealer" />
-                )}
-              </button>
-            </div>
+            {/* Only show the Select Dealer button if bypass is not enabled */}
+            {!this.state.bypassFFL && (
+              <div className="form-action">
+                <button
+                  type="button"
+                  className="button button--primary optimizedCheckout-buttonPrimary"
+                  onClick={this.toggleMapSelector}
+                >
+                  {this.state.selectedDealer && fflConsignment ? (
+                    <TranslatedString id="shipping.ffl_change_dealer" />
+                  ) : (
+                    <TranslatedString id="shipping.ffl_select_dealer" />
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         ) : null}
 
@@ -830,20 +899,23 @@ class DealerShipping extends React.PureComponent<
             />
           )}
 
-        <ShippingFormFooter
-          cartHasChanged={cartHasChanged}
-          isLoading={isLoading}
-          customerMessage={customerMessage}
-          onSubmit={this.handleMultiShippingSubmit}
-          shouldDisableSubmit={this.shouldDisableSubmit()}
-          shouldShowOrderComments={shouldShowOrderComments}
-          shouldShowShippingOptions={!hasUnassignedLineItems(consignments, cart.lineItems)}
-        />
+        {!this.state.manualFflInput && !this.state.bypassFFL && (
+          <ShippingFormFooter
+            cartHasChanged={cartHasChanged}
+            isLoading={isLoading}
+            customerMessage={customerMessage}
+            onSubmit={this.handleMultiShippingSubmit}
+            shouldDisableSubmit={this.shouldDisableSubmit()}
+            shouldShowOrderComments={shouldShowOrderComments}
+            shouldShowShippingOptions={!hasUnassignedLineItems(consignments, cart.lineItems)}
+          />
+        )}
 
-        {this.state.manualFflInput && (
+        {/* Show Shipping component if either manual FFL input is enabled or bypassFFL is true */}
+        {(this.state.manualFflInput || this.state.bypassFFL) && (
           <Shipping
             cartHasChanged={this.props.cartHasChanged}
-            isMultiShippingMode={this.props.isMultiShippingMode}
+            isMultiShippingMode={this.state.bypassFFL ? false : this.props.isMultiShippingMode}
             navigateNextStep={this.props.navigateNextStep}
             onCreateAccount={this.props.onCreateAccount}
             onReady={this.props.onReady}
