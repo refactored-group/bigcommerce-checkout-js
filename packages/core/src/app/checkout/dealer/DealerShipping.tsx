@@ -843,7 +843,7 @@ class DealerShipping extends React.PureComponent<
         )}
 
         {/* ========== Address Selector for Logged-in Users with Ammo ========== */}
-        {!customer.isGuest && this.hasOnlyAmmunition() && (
+        {!customer.isGuest && this.hasOnlyAmmunition() && !this.state.bypassFFL && (
           <div className="ammo-address-selector">
             <legend className="optimizedCheckout-headingSecondary" style={{ marginBottom: '5px' }}>
               Select Shipping Address
