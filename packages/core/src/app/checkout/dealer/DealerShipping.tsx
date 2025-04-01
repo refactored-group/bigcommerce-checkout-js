@@ -255,8 +255,7 @@ class DealerShipping extends React.PureComponent<
       withAmmoSubscription: false,
       bypassFFL: false,
       bypassOption: false,
-      bypassText:
-        "Manually enter your FFL's address and contact us with your FFL's documents after placing the order.",
+      bypassText: '',
     };
 
     this.debouncedAssignCustomShippingAddress = debounce(async () => {
