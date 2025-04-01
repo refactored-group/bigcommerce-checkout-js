@@ -24,6 +24,7 @@ export default function DealerCard(props: any): any {
       localizedCountry: 'United States',
       countryCode: 'US',
       fflID: dealer.license,
+      dealerId: dealer.id,
     });
 
   const dealerType = dealer.preferred ? 'locator-modal-dealer preferred' : 'locator-modal-dealer';
