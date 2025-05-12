@@ -442,6 +442,19 @@ class DealerShipping extends React.PureComponent<
   };
 
   selectDealer: (dealer: any) => void = async (dealer: any) => {
+    // API call to track dealer selection for analytics purposes
+    fetch(
+      `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealer.fflID}/select`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    ).catch((error) => {
+      console.log('Error logging dealer selection:', error);
+    });
+
     this.setState({
       selectedDealer: dealer,
       showLocator: false,
