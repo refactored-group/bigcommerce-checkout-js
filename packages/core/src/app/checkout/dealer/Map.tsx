@@ -3,6 +3,8 @@ import React, { Component } from 'react';
 import { Map, GoogleApiWrapper, Marker } from '@peacechen/google-maps-react';
 
 import formatPhoneNumber from './PhoneNumberFormatter';
+import { formatDealerForSelection } from './utils';
+import { DealerData } from './types';
 import InfoWindowEx from './locator/InfoWindowEx';
 import Fees from './locator/Fees';
 import Schedules from './locator/Schedules';
@@ -232,7 +234,7 @@ const mapStyles = {
 
 interface IProps {
   google: any;
-  dealers: any[];
+  dealers: DealerData[];
   selectDealer: any;
 }
 
@@ -329,23 +331,8 @@ export class MapContainer extends Component<IProps, IState> {
     }
   };
 
-  handleSelect = (dealer) => {
-    const formattedDealerPhoneNumber = formatPhoneNumber({ phoneNumber: dealer.phone_number });
-
-    this.props.selectDealer({
-      firstName: dealer.business_name,
-      lastName: dealer.license,
-      phone: formattedDealerPhoneNumber,
-      company: `${dealer.business_name} - ${dealer.license}`,
-      address1: dealer.premise_street,
-      address2: '',
-      city: dealer.premise_city,
-      stateOrProvinceCode: dealer.premise_state,
-      shouldSaveAddress: true,
-      postalCode: dealer.premise_zip,
-      localizedCountry: 'United States',
-      countryCode: 'US',
-    });
+  handleSelect = (dealer: DealerData) => {
+    this.props.selectDealer(formatDealerForSelection(dealer));
   };
 
   render() {

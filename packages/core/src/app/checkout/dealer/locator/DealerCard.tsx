@@ -1,31 +1,23 @@
 import React from 'react';
 
 import formatPhoneNumber from '../PhoneNumberFormatter';
+import { formatDealerForSelection } from '../utils';
+import { DealerData } from '../types';
 import Fees from './Fees';
 import Schedules from './Schedules';
 
-export default function DealerCard(props: any): any {
+interface DealerCardProps {
+  dealer: DealerData;
+  index: number;
+  selectDealer: (dealer: any) => void;
+}
+
+export default function DealerCard(props: DealerCardProps): JSX.Element {
   const { dealer, index } = props;
 
   const formattedDealerPhoneNumber = formatPhoneNumber({ phoneNumber: dealer.phone_number });
 
-  const handleSelect = () =>
-    props.selectDealer({
-      firstName: dealer.business_name,
-      lastName: dealer.license,
-      phone: formattedDealerPhoneNumber,
-      company: `${dealer.business_name} - ${dealer.license}`,
-      address1: dealer.premise_street,
-      address2: '',
-      city: dealer.premise_city,
-      stateOrProvinceCode: dealer.premise_state,
-      shouldSaveAddress: false,
-      postalCode: dealer.premise_zip,
-      localizedCountry: 'United States',
-      countryCode: 'US',
-      fflID: dealer.license,
-      dealerId: dealer.id,
-    });
+  const handleSelect = () => props.selectDealer(formatDealerForSelection(dealer));
 
   const dealerType = dealer.preferred ? 'locator-modal-dealer preferred' : 'locator-modal-dealer';
 
