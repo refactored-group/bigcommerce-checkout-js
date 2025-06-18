@@ -701,26 +701,6 @@ class DealerShipping extends React.PureComponent<
         {/* ========== FFL Consignment Area ========== */}
         {this.hasFirearms() || (this.hasOnlyAmmunition() && this.state.ammoStateFFLRequired) ? (
           <div className="ffl-consignment-area">
-            {/* Bypass checkbox appears inside FFL UI only if bypassOption is true */}
-            {this.state.bypassOption && (
-              <div
-                className="bypass-ffl-toggle"
-                style={{ display: 'flex', alignItems: 'center', marginBottom: '5px' }}
-              >
-                <input
-                  type="checkbox"
-                  id="bypassFFL"
-                  checked={this.state.bypassFFL}
-                  onChange={this.handleBypassFFLToggle}
-                  disabled={this.state.bypassFFL}
-                  style={{ margin: '0 8px 0 0' }}
-                />
-                <label htmlFor="bypassFFL" id="bypassFFL-label" style={{ margin: 0 }}>
-                  {this.state.bypassText}
-                </label>
-              </div>
-            )}
-
             {this.state.manualFflInput === false &&
               (!this.state.selectedDealer || !fflConsignment) &&
               !this.state.bypassFFL && (
@@ -771,6 +751,27 @@ class DealerShipping extends React.PureComponent<
                     <TranslatedString id="shipping.ffl_select_dealer" />
                   )}
                 </button>
+              </div>
+            )}
+
+            {/* Bypass checkbox appears below the Select Dealer button if bypassOption is true */}
+            {this.state.bypassOption && (
+              <div className="bypass-ffl-toggle" style={{ marginBottom: '10px' }}>
+                <input
+                  type="checkbox"
+                  id="bypassFFL"
+                  checked={this.state.bypassFFL}
+                  onChange={this.handleBypassFFLToggle}
+                  disabled={this.state.bypassFFL}
+                  style={{ margin: '0 10px 0 0', verticalAlign: 'middle' }}
+                />
+                <label
+                  htmlFor="bypassFFL"
+                  id="bypassFFL-label"
+                  style={{ margin: 0, verticalAlign: 'middle' }}
+                >
+                  {this.state.bypassText}
+                </label>
               </div>
             )}
           </div>
