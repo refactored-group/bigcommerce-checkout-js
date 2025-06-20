@@ -756,7 +756,10 @@ class DealerShipping extends React.PureComponent<
 
             {/* Bypass checkbox appears below the Select Dealer button if bypassOption is true */}
             {this.state.bypassOption && (
-              <div className="bypass-ffl-toggle" style={{ marginBottom: '10px' }}>
+              <div
+                className="bypass-ffl-toggle"
+                style={{ marginBottom: '10px', marginTop: '-10px' }}
+              >
                 <input
                   type="checkbox"
                   id="bypassFFL"
@@ -779,7 +782,7 @@ class DealerShipping extends React.PureComponent<
 
         {/* ========== Non-FFL Consignment Area ========== */}
         {groupedItemsWithoutFFLEntries.length > 0 && this.hasAnyFflItems() && (
-          <div className="non-ffl-consignment-area">
+          <div className="non-ffl-consignment-area" style={{ marginTop: '10px' }}>
             {!this.state.isLoading && (
               <>
                 <AddressFormModal
