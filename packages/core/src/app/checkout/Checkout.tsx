@@ -200,7 +200,7 @@ class Checkout extends Component<
             this.unsubscribeFromLogin();
             this.unsubscribeFromLogin = undefined;
         }
-        
+
         window.removeEventListener('beforeunload', this.handleBeforeExit);
         this.handleBeforeExit();
     }
@@ -278,11 +278,8 @@ class Checkout extends Component<
             const consignments = data.getConsignments();
             const cart = data.getCart();
 
-            // window.fflStorefrontToken is set by a custom script that is added
-            // when the BigCommerce app is installed
-            // the storefront API token is not available within the checkout SDK
-            if (cart && window.fflStorefrontToken) {
-                const [fflLineItems, ammoLineItems] = await getFflLineItems(window.fflStorefrontToken, cart);
+            if (cart) {
+                const [fflLineItems, ammoLineItems] = await getFflLineItems(this.state.storeHash, cart);
                 this.setState({ fflLineItems, ammoLineItems });
             } else {
                 console.warn('Could not find fflStorefrontToken');
@@ -771,7 +768,7 @@ class Checkout extends Component<
                  loadShippingOptions(),
              ]);
     }
-    
+
     private handleCloseErrorModal: () => void = () => {
         this.setState({ error: undefined });
     };

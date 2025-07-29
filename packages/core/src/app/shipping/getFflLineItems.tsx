@@ -1,84 +1,35 @@
 // @ts-nocheck
 import { Cart, LineItem } from '@bigcommerce/checkout-sdk';
 
-interface StoreProduct {
-  node: {
-    customFields: {
-      edges: CustomField[]
-    },
-    entityId: number
-  }
-}
+export default async function getFflLineItems(storeHash: string, cart: Cart): Promise<LineItem[]> {
+  let firearmProductIds = [];
+  let ammoProductIds = [];
 
-interface CustomField {
-  node: {
-    name: string,
-    value: string
-  }
-}
+  const data = await loadProductsWithCustomFields(storeHash, cart);
 
-export default async function getFflLineItems(token: string, cart: Cart): Promise<LineItem[]> {
-  const { data } = await loadProductsWithCustomFields(token, cart)
-
-  const fflProducts = data.site.products.edges.filter((product: StoreProduct) =>
-    product.node.customFields.edges.some((edge: any) => {
-      // FRM-241 - introduced new custom field identifier but we are temporarily supporting the old values
-      return (edge.node.name.toLowerCase() == 'ffl_type'
-          && edge.node.value.toLowerCase() == 'firearm')
-          || (edge.node.name.toLowerCase() == 'ffl'
-          && edge.node.value.toLowerCase() == 'yes');
-    })
-  )
-
-  const ammoProducts = data.site.products.edges.filter((product: StoreProduct) =>
-    product.node.customFields.edges.some((edge: any) => {
-      return edge.node.name.toLowerCase() == 'ffl_type'
-          && edge.node.value.toLowerCase() == 'ammo';
-    })
-  )
-
-  const fflProductIds = fflProducts.map((product: StoreProduct) => product.node.entityId)
-  const ammoProductIds = ammoProducts.map((product: StoreProduct) => product.node.entityId)
+  data.forEach(item => {
+    // currently, only ammo items has a conditions key
+    if ('conditions' in item) {
+      ammoProductIds.push(item.id);
+    } else {
+      firearmProductIds.push(item.id);
+    }
+  });
 
   return [
-    cart.lineItems.physicalItems.filter((item) => fflProductIds.includes(item.productId)),
+    cart.lineItems.physicalItems.filter((item) => firearmProductIds.includes(item.productId)),
     cart.lineItems.physicalItems.filter((item) => ammoProductIds.includes(item.productId))
   ]
 }
 
-function loadProductsWithCustomFields(token: string, cart: Cart): Promise<any> {
+function loadProductsWithCustomFields(storeHash: string, cart: Cart): Promise<any> {
+  const queryString = cart.lineItems.physicalItems.map(item => `product_ids[]=${item.productId}`).join('&');
 
-  const ids = cart.lineItems.physicalItems.map((x) => x.productId)
-
-  const graphqlBody: (any) = {
-    query: `query Products {
-        site {
-          products (first: ${ids.length}, entityIds: [${ids}]) {
-            edges {
-              node {
-                entityId
-                customFields {
-                  edges {
-                    node {
-                      name
-                      value
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }`,
-  };
-
-  return fetch("/graphql", {
-    method: "POST",
+  return fetch(`https://${process.env.HOST}/store-front/api/stores/${storeHash}/products/restrictions?${queryString}`, {
+    method: 'GET',
     headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
     },
-    body: JSON.stringify(graphqlBody),
   }).then((res) => {
     return res.json();
   });
