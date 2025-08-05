@@ -279,8 +279,19 @@ class Checkout extends Component<
             const cart = data.getCart();
 
             if (cart) {
-                const [fflLineItems, ammoLineItems] = await getFflLineItems(this.state.storeHash, cart);
-                this.setState({ fflLineItems, ammoLineItems });
+                try {
+                    const [fflLineItems, ammoLineItems] = await getFflLineItems(this.state.storeHash, cart);
+                    this.setState({ fflLineItems, ammoLineItems });
+                } catch (error) {
+                    this.setState({
+                        error: new CustomError({
+                            title: "Error",
+                            message: "Contact customer support to verify your FFL if you have firearm related products in the cart",
+                            data: {},
+                            name: 'default',
+                        }),
+                    });
+                }
             } else {
                 console.warn('Could not find fflStorefrontToken');
             }
