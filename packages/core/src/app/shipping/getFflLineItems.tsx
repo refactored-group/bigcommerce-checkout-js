@@ -2,24 +2,8 @@
 import { Cart, LineItem } from '@bigcommerce/checkout-sdk';
 
 export default async function getFflLineItems(storeHash: string, cart: Cart): Promise<LineItem[]> {
-  let firearmProductIds = [];
-  let ammoProductIds = [];
-
   const data = await loadProductsWithCustomFields(storeHash, cart);
-
-  data.forEach(item => {
-    // currently, only ammo items has a conditions key
-    if ('conditions' in item) {
-      ammoProductIds.push(item.id);
-    } else {
-      firearmProductIds.push(item.id);
-    }
-  });
-
-  return [
-    cart.lineItems.physicalItems.filter((item) => firearmProductIds.includes(item.productId)),
-    cart.lineItems.physicalItems.filter((item) => ammoProductIds.includes(item.productId))
-  ]
+  return data;
 }
 
 function loadProductsWithCustomFields(storeHash: string, cart: Cart): Promise<any> {

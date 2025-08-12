@@ -170,9 +170,10 @@ class Checkout extends Component<
     CheckoutState
 > {
     state: CheckoutState = {
-        ammoLineItems: [],
         fflLicense: "",
         fflLineItems: [],
+        fflProducts: [],
+        fflStateRestrictedItems: [],
         hasSelectedShippingOptions: false,
         isBillingSameAsShipping: true,
         isBuyNowCartEnabled: false,
@@ -280,8 +281,26 @@ class Checkout extends Component<
 
             if (cart) {
                 try {
-                    const [fflLineItems, ammoLineItems] = await getFflLineItems(this.state.storeHash, cart);
-                    this.setState({ fflLineItems, ammoLineItems });
+                    let fflProductIds = [];
+                    // ffl products that only triggers for certain states
+                    let fflStateRestrictedProductIds = [];
+
+                    const fflProducts = await getFflLineItems(this.state.storeHash, cart);
+
+                    fflProducts.forEach(item => {
+                      // currently, we only have the ship state condition
+                      if ('conditions' in item) {
+                        fflStateRestrictedProductIds.push(item.id);
+                      } else {
+                        fflProductIds.push(item.id);
+                      }
+                    });
+
+                    this.setState({
+                        fflProducts: fflProducts,
+                        fflLineItems: cart.lineItems.physicalItems.filter((item) => fflProductIds.includes(item.productId)),
+                        fflStateRestrictedItems: cart.lineItems.physicalItems.filter((item) => fflStateRestrictedProductIds.includes(item.productId))
+                    });
                 } catch (error) {
                     this.setState({
                         error: new CustomError({
@@ -412,8 +431,8 @@ class Checkout extends Component<
                 return this.renderCustomerStep(step);
 
             case CheckoutStepType.Shipping:
-                return (this.state.fflLineItems || this.state.ammoLineItems) &&
-                (this.state.fflLineItems.length > 0 || (this.state.ammoLineItems.length > 0 && this.state.withAmmoSubscription)) ?
+                return (this.state.fflLineItems || this.state.fflStateRestrictedItems) &&
+                (this.state.fflLineItems.length > 0 || (this.state.fflStateRestrictedItems.length > 0 && this.state.withAmmoSubscription)) ?
                 this.renderDealerShippingStep(step) :
                 this.renderShippingStep(step);
 
@@ -528,7 +547,7 @@ class Checkout extends Component<
           } = this.props;
 
           const fflConsignmentItems = this.state.fflLineItems.map(fflItem => ({ itemId: fflItem.id, quantity: fflItem.quantity }));
-          const ammoConsignmentItems = this.state.ammoLineItems.map(fflItem => ({ itemId: fflItem.id, quantity: fflItem.quantity }));
+          const stateRestrictedConsignmentItems = this.state.fflStateRestrictedItems.map(fflItem => ({ itemId: fflItem.id, quantity: fflItem.quantity }));
 
           if (!cart) {
               return;
@@ -552,8 +571,8 @@ class Checkout extends Component<
               >
                   <LazyContainer>
                     <DealerShipping
-                        ammoConsignmentItems={ ammoConsignmentItems }
                         cartHasChanged={ hasCartChanged }
+                        fflProducts={ this.state.fflProducts }
                         handleConsignmentsAdresses={ this.handleConsignmentsAdresses }
                         fflConsignmentItems={ fflConsignmentItems }
                         isMultiShippingMode={ true }
@@ -563,6 +582,7 @@ class Checkout extends Component<
                         onSignIn={ this.handleShippingSignIn }
                         onToggleMultiShipping={ this.handleToggleMultiShipping }
                         onUnhandledError={ this.handleUnhandledError }
+                        stateRestrictedConsignmentItems={ stateRestrictedConsignmentItems }
                         storeHash={ this.state.storeHash }
                         setSelectedFFL={ this.setSelectedFFL }
                         setFFLtoOrderComments={ this.setFFLtoOrderComments }

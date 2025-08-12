@@ -153,7 +153,7 @@ interface DealerProps {
   navigateNextStep: any;
   onCreateAccount: any;
   fflConsignmentItems: any;
-  ammoConsignmentItems: any;
+  stateRestrictedConsignmentItems: any;
   onReady: any;
   onSignIn: any;
   onToggleMultiShipping: any;
@@ -333,18 +333,18 @@ class DealerShipping extends React.PureComponent<
       return [];
     }
 
-    const { ammoConsignmentItems, fflConsignmentItems } = this.props;
+    const { stateRestrictedConsignmentItems, fflConsignmentItems } = this.props;
     const { withAmmoSubscription, ammoStateFFLRequired } = this.state;
 
     // If there are firearms and ammo in the cart with an ammo subscription,
     // mark ammo as FFL required without state checks
-    if (withAmmoSubscription && fflConsignmentItems.length > 0 && ammoConsignmentItems.length > 0) {
-      return fflConsignmentItems.concat(ammoConsignmentItems);
+    if (withAmmoSubscription && fflConsignmentItems.length > 0 && stateRestrictedConsignmentItems.length > 0) {
+      return fflConsignmentItems.concat(stateRestrictedConsignmentItems);
     }
 
     // Original logic for other cases
     if (withAmmoSubscription && ammoStateFFLRequired) {
-      return fflConsignmentItems.concat(ammoConsignmentItems);
+      return fflConsignmentItems.concat(stateRestrictedConsignmentItems);
     }
     return fflConsignmentItems;
   }
@@ -373,16 +373,16 @@ class DealerShipping extends React.PureComponent<
    * Checks if the cart contains any ammunition items
    */
   private hasAmmunition(): boolean {
-    const { ammoConsignmentItems } = this.props;
-    return ammoConsignmentItems.length > 0;
+    const { stateRestrictedConsignmentItems } = this.props;
+    return stateRestrictedConsignmentItems.length > 0;
   }
 
   /**
    * Checks if the cart contains only ammunition (no firearms)
    */
   private hasOnlyAmmunition(): boolean {
-    const { fflConsignmentItems, ammoConsignmentItems } = this.props;
-    return fflConsignmentItems.length === 0 && ammoConsignmentItems.length > 0;
+    const { fflConsignmentItems, stateRestrictedConsignmentItems } = this.props;
+    return fflConsignmentItems.length === 0 && stateRestrictedConsignmentItems.length > 0;
   }
 
   /**
@@ -531,13 +531,13 @@ class DealerShipping extends React.PureComponent<
       onUnhandledError,
       consignments,
       fflConsignmentItems,
-      ammoConsignmentItems,
+      stateRestrictedConsignmentItems,
     } = this.props;
     const { withAmmoSubscription } = this.state;
 
     // Skip state validation if there are firearms and ammo with an ammo subscription
     const skipStateValidation =
-      withAmmoSubscription && fflConsignmentItems.length > 0 && ammoConsignmentItems.length > 0;
+      withAmmoSubscription && fflConsignmentItems.length > 0 && stateRestrictedConsignmentItems.length > 0;
 
     const fflRequired = skipStateValidation || this.state.ammoFFLRequiredStates.includes(stateCode);
 
@@ -605,14 +605,14 @@ class DealerShipping extends React.PureComponent<
     itemId: string,
     itemKey: string,
   ) => Promise<void> = async (address, itemId, itemKey) => {
-    const { assignItem, onUnhandledError, getFields, ammoConsignmentItems, customer } = this.props;
+    const { assignItem, onUnhandledError, getFields, stateRestrictedConsignmentItems, customer } = this.props;
 
     if (!isValidAddress(address, getFields(address.countryCode))) {
       return onUnhandledError(new AssignItemInvalidAddressError());
     }
 
     const isLoggedIn = !customer.isGuest;
-    if (isLoggedIn && ammoConsignmentItems.length > 0 && !this.hasFirearms()) {
+    if (isLoggedIn && stateRestrictedConsignmentItems.length > 0 && !this.hasFirearms()) {
       await this.validateAndUnassignState(address.stateOrProvinceCode);
     }
 
@@ -648,7 +648,7 @@ class DealerShipping extends React.PureComponent<
 
   render() {
     const {
-      ammoConsignmentItems,
+      stateRestrictedConsignmentItems,
       cart,
       cartHasChanged,
       consignments,
@@ -880,7 +880,7 @@ class DealerShipping extends React.PureComponent<
               onSelectAddress={this.handleSelectAddress}
               onUseNewAddress={this.handleUseNewAddress}
               selectedAddress={
-                ammoConsignmentItems.length > 0 &&
+                stateRestrictedConsignmentItems.length > 0 &&
                 consignments.length > 0 &&
                 consignments[0].shippingAddress
               }
