@@ -17,8 +17,9 @@ export default async function getFflLineItems(storeHash: string, cart: Cart): Pr
   });
 
   return [
+    data,
     cart.lineItems.physicalItems.filter((item) => firearmProductIds.includes(item.productId)),
-    cart.lineItems.physicalItems.filter((item) => ammoProductIds.includes(item.productId))
+    cart.lineItems.physicalItems.filter((item) => ammoProductIds.includes(item.productId)),
   ]
 }
 
