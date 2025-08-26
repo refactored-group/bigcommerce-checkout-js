@@ -130,6 +130,7 @@ function appConfig(options, argv) {
                     new DefinePlugin({
                         'process.env.HOST': JSON.stringify(process.env.HOST),
                         'process.env.GOOGLE_MAPS_KEY': JSON.stringify(process.env.GOOGLE_MAPS_KEY),
+                        'process.env.STATIC_HOST': JSON.stringify(process.env.STATIC_HOST)
                       }),
                     new BuildHookPlugin({
                         onSuccess() {
