@@ -17,7 +17,7 @@ import {
   ShippingRequestOptions,
   RequestOptions,
 } from '@bigcommerce/checkout-sdk';
-import React, { lazy } from 'react';
+import React, { lazy, useEffect } from 'react';
 import { debounce, noop } from 'lodash';
 
 import { withCheckout, CheckoutContextProps } from '../../checkout';
@@ -29,6 +29,8 @@ import updateShippableItems from '../../shipping/updateShippableItems';
 import AddressSelect from '../../address/AddressSelect';
 import { AddressType, StaticAddress } from '../../address';
 import { TranslatedString } from '@bigcommerce/checkout/locale';
+import { Modal, ModalHeader } from '@bigcommerce/checkout/ui';
+
 import {
   AssignItemFailedError,
   AssignItemInvalidAddressError,
@@ -196,6 +198,28 @@ interface DealerState {
   bypassFFL: boolean;
   bypassOption: boolean;
   bypassText: string;
+}
+
+function DealerMessageListener({ selectDealer }) {
+  useEffect(() => {
+      function handleMessage(event: MessageEvent) {
+          if (event.data?.type === 'dealerUpdate') {
+              const dealer = event.data.value;
+              selectDealer(dealer);
+              console.log('Dealer update received in Shipping step:', dealer);
+          }
+      }
+
+      window.addEventListener('message', handleMessage);
+      console.log('Message listener attached for Shipping step');
+
+      return () => {
+          window.removeEventListener('message', handleMessage);
+          console.log('Message listener removed (left Shipping step)');
+      };
+  }, []);
+
+  return null;
 }
 
 // ----------------------
@@ -441,7 +465,7 @@ class DealerShipping extends React.PureComponent<
   selectDealer: (dealer: any) => void = async (dealer: any) => {
     // API call to track dealer selection for analytics purposes
     fetch(
-      `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealer.dealerId}/select`,
+      `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealer.id}/select`,
       {
         method: 'POST',
         headers: {
@@ -746,6 +770,21 @@ class DealerShipping extends React.PureComponent<
             {/* Only show the Select Dealer button if bypass is not enabled */}
             {!this.state.bypassFFL && (
               <div className="form-action">
+                <DealerMessageListener selectDealer={this.selectDealer} />
+                <Modal
+                  additionalBodyClassName="modal-iframe"
+                  additionalModalClassName="modal--large"
+                  isOpen={this.state.showLocator}
+                  onRequestClose={this.handleCancel}
+                  shouldShowCloseButton={true}
+                >
+                <iframe
+                    src={`http://${process.env.STATIC_HOST}/index.html?store_hash=${this.props.storeHash}&platform=BigCommerce&maps_api_key=${process.env.GOOGLE_MAPS_KEY}`}
+                    width="100%"
+                    height="100%"
+                    frameBorder="0"
+                ></iframe>
+                </Modal>
                 <button
                   type="button"
                   className="button button--primary optimizedCheckout-buttonPrimary"
@@ -947,15 +986,7 @@ class DealerShipping extends React.PureComponent<
           />
         )}
 
-        {this.props.storeHash !== '' && (
-          <Locator
-            storeHash={this.props.storeHash}
-            showLocator={this.state.showLocator}
-            handleCancel={this.handleCancel}
-            selectDealer={this.selectDealer}
-            announcement={this.state.announcement}
-          />
-        )}
+
       </section>
     );
   }
