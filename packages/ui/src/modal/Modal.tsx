@@ -62,7 +62,7 @@ const Modal: FunctionComponent<ModalProps> = ({
                 beforeClose: 'modalOverlay--beforeClose',
             }}
             shouldCloseOnEsc={true}
-            shouldCloseOnOverlayClick={false}
+            shouldCloseOnOverlayClick={true}
         >
             <div className={classNames('modal-header', additionalHeaderClassName)}>
                 {header}

@@ -16,8 +16,25 @@
     }
 }
 
-.modal-iframe {
+.modal-iframe-body {
     overflow: hidden !important;
-    height: 800px;
-    padding-bottom: 30px !important;
+    height: 100% !important;
+    padding-bottom: 15px !important;
+}
+
+.modal-iframe-header {
+    padding: 0 !important;
+}
+
+
+.modal-iframe {
+    height: 70% !important;
+
+    @media (min-width: 541px) {
+        width: 70% !important;
+    }
+
+    @media (max-width: 540px) {
+        width: 100% !important;
+    }
 }
