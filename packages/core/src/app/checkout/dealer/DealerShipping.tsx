@@ -772,11 +772,12 @@ class DealerShipping extends React.PureComponent<
               <div className="form-action">
                 <DealerMessageListener selectDealer={this.selectDealer} />
                 <Modal
-                  additionalBodyClassName="modal-iframe"
-                  additionalModalClassName="modal--large"
+                  additionalBodyClassName="modal-iframe-body"
+                  additionalHeaderClassName="modal-iframe-header"
+                  additionalModalClassName="modal-iframe"
                   isOpen={this.state.showLocator}
                   onRequestClose={this.handleCancel}
-                  shouldShowCloseButton={true}
+                  shouldShowCloseButton={false}
                 >
                 <iframe
                     src={`http://${process.env.STATIC_HOST}/index.html?store_hash=${this.props.storeHash}&platform=BigCommerce&maps_api_key=${process.env.GOOGLE_MAPS_KEY}`}
