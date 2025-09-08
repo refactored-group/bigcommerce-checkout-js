@@ -780,7 +780,7 @@ class DealerShipping extends React.PureComponent<
                   shouldShowCloseButton={false}
                 >
                 <iframe
-                    src={`http://${process.env.STATIC_HOST}/index.html?store_hash=${this.props.storeHash}&platform=BigCommerce&maps_api_key=${process.env.GOOGLE_MAPS_KEY}`}
+                    src={`https://${process.env.STATIC_HOST}/index.html?store_hash=${this.props.storeHash}&platform=BigCommerce&maps_api_key=${process.env.GOOGLE_MAPS_KEY}`}
                     width="100%"
                     height="100%"
                     frameBorder="0"
