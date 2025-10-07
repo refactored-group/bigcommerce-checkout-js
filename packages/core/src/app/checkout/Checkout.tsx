@@ -279,7 +279,7 @@ class Checkout extends Component<
             const consignments = data.getConsignments();
             const cart = data.getCart();
 
-            if (cart) {
+            if (cart?.lineItems.physicalItems.length > 0) {
                 try {
                     const [fflProducts, fflLineItems, fflStateRestrictedItems] = await getFflLineItems(this.state.storeHash, cart);
                     this.setState({ fflLineItems, fflProducts, fflStateRestrictedItems });
@@ -293,8 +293,6 @@ class Checkout extends Component<
                         }),
                     });
                 }
-            } else {
-                console.warn('Could not find fflStorefrontToken');
             }
 
             const hasMultiShippingEnabled =
