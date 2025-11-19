@@ -499,7 +499,7 @@ class DealerShipping extends React.PureComponent<
     }
 
     try {
-      this.props.setSelectedFFL(dealer.fflID);
+      this.props.setSelectedFFL(dealer);
       await assignItem(consignment);
     } catch (e) {
       onUnhandledError(new AssignItemFailedError(e as any));

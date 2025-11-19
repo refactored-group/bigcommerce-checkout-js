@@ -129,7 +129,7 @@ export interface CheckoutState {
     isSubscribed: boolean;
     fflLineItems: LineItem[];
     storeHash: string;
-    fflLicense: string;
+    selectedFFL: any;
     fflToOrderComments: boolean;
     withAmmoSubscription: boolean;
     buttonConfigs: PaymentMethod[];
@@ -170,7 +170,7 @@ class Checkout extends Component<
     CheckoutState
 > {
     state: CheckoutState = {
-        fflLicense: "",
+        selectedFFL: null,
         fflLineItems: [],
         fflProducts: [],
         fflStateRestrictedItems: [],
@@ -624,7 +624,7 @@ class Checkout extends Component<
                         onSubmitError={this.handleError}
                         onUnhandledError={this.handleUnhandledError}
                         storeHash={this.state.storeHash}
-                        selectedFFL={this.state.fflLicense}
+                        selectedFFL={this.state.selectedFFL}
                         fflToOrderComments={this.state.fflToOrderComments}
                     />
                 </LazyContainer>
@@ -892,7 +892,7 @@ class Checkout extends Component<
     }
 
     private setSelectedFFL: () => void = (value) => {
-        this.setState({ fflLicense: value });
+        this.setState({ selectedFFL: value });
     }
 
     private setFFLtoOrderComments: () => void = (value) => {

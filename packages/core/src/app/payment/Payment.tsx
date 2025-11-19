@@ -54,7 +54,7 @@ export interface PaymentProps {
     onSubmitError?(error: Error): void;
     onUnhandledError?(error: Error): void;
     storeHash: string;
-    selectedFFL: string;
+    selectedFFL: any;
     fflToOrderComments: boolean;
 }
 
@@ -476,7 +476,7 @@ class Payment extends Component<
 
         try {
             if (this.props.selectedFFL && this.props.fflToOrderComments) {
-                await appendFFLtoCheckoutNotes(checkout, updateCheckout, this.props.selectedFFL);
+                await appendFFLtoCheckoutNotes(checkout, updateCheckout, this.props.selectedFFL, this.props.storeHash);
             }
 
             const state = await submitOrder(mapToOrderRequestBody(values, isPaymentDataRequired()));
