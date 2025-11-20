@@ -2,8 +2,7 @@
 export default async function appendFFLtoCheckoutNotes(
   checkout,
   updateCheckout,
-  selectedFFL,
-  storeHash
+  selectedFFL
 ): Promise<CheckoutSelectors> {
   // Appends FFL information to the checkout order comments in the following format:
   // Format: <existing message>|FFL#<license>|Expiration:<date>|EZcheck:<url>
@@ -33,7 +32,7 @@ export default async function appendFFLtoCheckoutNotes(
   const atfLink = `https://fflezcheck.atf.gov/FFLEzCheck/fflSearch?licsRegn=${licsRegn}&licsDis=${licsDis}&licsSeq=${licsSeq}`;
   const certificateURL = '';
 
-  await fetch(`https://${process.env.HOST}/store-front/api/${storeHash}/dealers/${selectedFFL.id}/certificate`, {
+  await fetch(`https://${process.env.HOST}/store-front/api/dealers/${selectedFFL.id}/certificate`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
