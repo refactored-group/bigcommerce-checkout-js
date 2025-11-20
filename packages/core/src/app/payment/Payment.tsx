@@ -476,7 +476,7 @@ class Payment extends Component<
 
         try {
             if (this.props.selectedFFL && this.props.fflToOrderComments) {
-                await appendFFLtoCheckoutNotes(checkout, updateCheckout, this.props.selectedFFL, this.props.storeHash);
+                await appendFFLtoCheckoutNotes(checkout, updateCheckout, this.props.selectedFFL);
             }
 
             const state = await submitOrder(mapToOrderRequestBody(values, isPaymentDataRequired()));
