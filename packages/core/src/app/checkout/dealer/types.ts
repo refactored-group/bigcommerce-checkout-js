@@ -15,6 +15,7 @@ export interface DealerSelectionData extends Omit<Address, 'id'> {
   countryCode: string;
   fflID: string;
   dealerId: string;
+  uuid?: string;
 }
 
 export interface DealerData {
@@ -31,4 +32,5 @@ export interface DealerData {
   fees: any[];
   schedules: any[];
   preferred?: boolean;
+  uuid?: string;
 }

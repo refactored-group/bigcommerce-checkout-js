@@ -5,7 +5,7 @@ export default async function appendFFLtoCheckoutNotes(
   selectedFFL
 ): Promise<CheckoutSelectors> {
   // Appends FFL information to the checkout order comments in the following format:
-  // Format: <existing message>|FFL#<license>|Expiration:<date>|EZcheck:<url>
+  // Format: <existing message>|FFL#<license>|Expiration:<date>|EZcheck:<url>|Certificate:<url>
   const months = {
     A: '01',
     B: '02',
@@ -30,31 +30,11 @@ export default async function appendFFLtoCheckoutNotes(
   const licsDis = fflParts[1]; // Second part (04)
   const licsSeq = fflParts[5]; // Last part (03791)
   const atfLink = `https://fflezcheck.atf.gov/FFLEzCheck/fflSearch?licsRegn=${licsRegn}&licsDis=${licsDis}&licsSeq=${licsSeq}`;
-  const certificateURL = '';
 
-  await fetch(`https://${process.env.HOST}/store-front/api/dealers/${selectedFFL.id}/certificate`, {
-    method: 'GET',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-  })
-    .then(res => {
-      if (res.status === 404) {
-        return null;
-      } else{
-        return res.json();
-      }
-    })
-    .then(data => {
-      if (data === null) {
-        console.log(`No FFL certificate found for ${selectedFFL.fflID}`)
-      } else {
-        certificateURL = `|Certificate:${data.url}`;
-      }
-    })
-    .catch(err => {
-      console.log('Certificate fetch failed:', err);
-    });
+  // Build certificate URL from uuid if available
+  const certificateURL = selectedFFL.uuid
+    ? `|Certificate:https://certificate.automaticffl.com/${selectedFFL.uuid}`
+    : '';
 
   const message = `${checkout.customerMessage}|FFL#${selectedFFL.fflID}|Expiration:${expiryMonth}/01/${expiryYear}|EZcheck:${atfLink}${certificateURL}`;
 

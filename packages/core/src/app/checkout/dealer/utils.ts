@@ -36,5 +36,6 @@ export const formatDealerForSelection = (
     fflID: dealer.license,
     dealerId: dealer.id,
     customFields: [],
+    uuid: dealer.uuid,
   };
 };
