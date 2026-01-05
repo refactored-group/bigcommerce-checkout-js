@@ -53,6 +53,22 @@ npx nx run <package-name>:test
 - **embeddedCheckout/** - Iframe-based checkout support
 - **ui/** - Shared UI components (forms, modals, loading states)
 
+### FFL Dealer Integration
+
+The checkout includes FFL (Federal Firearms License) dealer selection for firearm purchases. Key files:
+- **checkout/dealer/** - Dealer selection components and types
+- **order/appendFFLtoCheckoutNotes.ts** - Appends FFL info (license, expiration, certificate URL) to order comments
+
+**Critical: Iframe Integration with automatic-ffl-map**
+
+Dealer selection uses an iframe that loads from `STATIC_HOST` (the automatic-ffl-map app). The iframe communicates via `window.postMessage`:
+
+- `DealerMessageListener` in `DealerShipping.tsx` receives `dealerUpdate` messages
+- The dealer object structure must match between both codebases
+- If new dealer fields are needed (e.g., `uuid` for certificate URLs), they must be added in BOTH:
+  1. `automatic-ffl-map`: `src/components/Dealer/components/LocatorMap/utils.ts` (`handleSelect` function)
+  2. This repo: `packages/core/src/app/checkout/dealer/types.ts` (DealerSelectionData interface)
+
 ### Nx Monorepo Scopes
 Enforced by ESLint module boundaries:
 - `scope:core` - Core app, can only depend on `scope:shared`
