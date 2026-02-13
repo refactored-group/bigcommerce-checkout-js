@@ -1105,6 +1105,7 @@ class DealerShipping extends React.PureComponent<
 
   private validateCustomShippingFields: () => boolean = () => {
     let isValid = true;
+    let firstErrorField: string | null = null;
     const fields = [
       'customFirstNameInput',
       'customLastNameInput',
@@ -1120,8 +1121,16 @@ class DealerShipping extends React.PureComponent<
     for (const stateKey of fields) {
       if (!this.state[stateKey]) {
         this.setState({ [`${stateKey}Error`]: true });
+        if (!firstErrorField) {
+          firstErrorField = stateKey.replace('custom', '');
+          firstErrorField = firstErrorField.charAt(0).toLowerCase() + firstErrorField.slice(1);
+        }
         isValid = false;
       }
+    }
+
+    if (firstErrorField) {
+      document.getElementById(firstErrorField)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     return isValid;
