@@ -187,6 +187,7 @@ interface DealerState {
   customLastNameInputError: boolean;
   customCompanyInput: string;
   customPhoneInput: string;
+  customPhoneInputError: boolean;
   customAddressLine1Input: string;
   customAddressLine1InputError: boolean;
   customAddressLine2Input: string;
@@ -264,6 +265,7 @@ class DealerShipping extends React.PureComponent<
       customLastNameInput: '',
       customLastNameInputError: false,
       customPhoneInput: '',
+      customPhoneInputError: false,
       customPostCodeInput: '',
       customPostCodeInputError: false,
       isLoading: true,
@@ -533,12 +535,15 @@ class DealerShipping extends React.PureComponent<
         [stateKeyError]: false,
       },
       () => {
+        const phoneOk = !this.isPhoneRequired() || this.state.customPhoneInput;
+
         if (
           this.state.customFirstNameInput &&
           this.state.customLastNameInput &&
           this.state.customAddressLine1Input &&
           this.state.customCityInput &&
-          this.state.customPostCodeInput
+          this.state.customPostCodeInput &&
+          phoneOk
         ) {
           this.debouncedAssignCustomShippingAddress();
         }
@@ -611,6 +616,7 @@ class DealerShipping extends React.PureComponent<
       customLastNameInputError: false,
       customCompanyInput: '',
       customPhoneInput: '',
+      customPhoneInputError: false,
       customAddressLine1Input: '',
       customAddressLine1InputError: false,
       customAddressLine2Input: '',
@@ -619,6 +625,13 @@ class DealerShipping extends React.PureComponent<
       customPostCodeInput: '',
       customPostCodeInputError: false,
     };
+  };
+
+  private isPhoneRequired = (): boolean => {
+    const { getFields } = this.props;
+    const fields = getFields('US');
+    const phoneField = fields.find((field) => field.name === 'phone');
+    return phoneField?.required ?? false;
   };
 
   validateSelectedState: (event: any) => void = async (event) => {
@@ -945,6 +958,8 @@ class DealerShipping extends React.PureComponent<
               lastNameInputError={this.state.customLastNameInputError}
               companyInput={this.state.customCompanyInput}
               phoneInput={this.state.customPhoneInput}
+              phoneInputError={this.state.customPhoneInputError}
+              isPhoneRequired={this.isPhoneRequired()}
               addressLine1Input={this.state.customAddressLine1Input}
               addressLine1InputError={this.state.customAddressLine1InputError}
               addressLine2Input={this.state.customAddressLine2Input}
@@ -1097,6 +1112,10 @@ class DealerShipping extends React.PureComponent<
       'customCityInput',
       'customPostCodeInput',
     ];
+
+    if (this.isPhoneRequired()) {
+      fields.push('customPhoneInput');
+    }
 
     for (const stateKey of fields) {
       if (!this.state[stateKey]) {
