@@ -8,6 +8,8 @@ interface CustomShippingFormProps {
   lastNameInputError: boolean;
   companyInput: string;
   phoneInput: string;
+  phoneInputError: boolean;
+  isPhoneRequired: boolean;
   addressLine1Input: string;
   addressLine1InputError: boolean;
   addressLine2Input: string;
@@ -126,10 +128,18 @@ export default class CustomShippingForm extends React.PureComponent<
             />
           </div>
         </div>
-        <div className="dynamic-form-field dynamic-form-field--phone">
+        <div
+          className={
+            'dynamic-form-field dynamic-form-field--phone ' +
+            (this.props.phoneInputError ? 'form-field--error' : '')
+          }
+        >
           <div className="form-field">
             <label id="phoneInput-label" className="form-label optimizedCheckout-form-label">
-              Phone Number <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              Phone Number{' '}
+              {!this.props.isPhoneRequired && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="phoneInput-label phoneInput-field-error-message"
@@ -141,6 +151,18 @@ export default class CustomShippingForm extends React.PureComponent<
               value={this.props.phoneInput}
               onChange={this.onChangeField}
             />
+            <ul className={'form-field-errors ' + (this.props.phoneInputError ? '' : 'hide')}>
+              <li className="form-field-error">
+                <label
+                  aria-live="polite"
+                  className="form-inlineMessage"
+                  id="phoneInput-field-error-message"
+                  role="alert"
+                >
+                  Phone Number is required
+                </label>
+              </li>
+            </ul>
           </div>
         </div>
         <div
