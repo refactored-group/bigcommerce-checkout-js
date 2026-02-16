@@ -7,12 +7,14 @@ interface CustomShippingFormProps {
   lastNameInput: string;
   lastNameInputError: boolean;
   companyInput: string;
+  companyInputError: boolean;
   phoneInput: string;
   phoneInputError: boolean;
-  isPhoneRequired: boolean;
+  fieldRequirements: Record<string, boolean>;
   addressLine1Input: string;
   addressLine1InputError: boolean;
   addressLine2Input: string;
+  addressLine2InputError: boolean;
   cityInput: string;
   cityInputError: boolean;
   postCodeInput: string;
@@ -40,6 +42,10 @@ export default class CustomShippingForm extends React.PureComponent<
     this.props.onChangeCustomShippingField(value, fieldId);
   }
 
+  private isFieldRequired(stateKey: string): boolean {
+    return this.props.fieldRequirements[stateKey] ?? false;
+  }
+
   render() {
     return (
       <div className="checkout-address">
@@ -51,7 +57,10 @@ export default class CustomShippingForm extends React.PureComponent<
         >
           <div className="form-field">
             <label id="firstNameInput-label" className="form-label optimizedCheckout-form-label">
-              First Name
+              First Name{' '}
+              {!this.isFieldRequired('customFirstNameInput') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="firstNameInput-label firstNameInput-field-error-message"
@@ -85,7 +94,10 @@ export default class CustomShippingForm extends React.PureComponent<
         >
           <div className="form-field">
             <label id="lastNameInput-label" className="form-label optimizedCheckout-form-label">
-              Last Name
+              Last Name{' '}
+              {!this.isFieldRequired('customLastNameInput') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="lastNameInput-label lastNameInput-field-error-message"
@@ -111,10 +123,18 @@ export default class CustomShippingForm extends React.PureComponent<
             </ul>
           </div>
         </div>
-        <div className="dynamic-form-field dynamic-form-field--company">
+        <div
+          className={
+            'dynamic-form-field dynamic-form-field--company ' +
+            (this.props.companyInputError ? 'form-field--error' : '')
+          }
+        >
           <div className="form-field">
             <label id="companyInput-label" className="form-label optimizedCheckout-form-label">
-              Company Name <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              Company Name{' '}
+              {!this.isFieldRequired('customCompanyInput') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="companyInput-label companyInput-field-error-message"
@@ -126,6 +146,18 @@ export default class CustomShippingForm extends React.PureComponent<
               value={this.props.companyInput}
               onChange={this.onChangeField}
             />
+            <ul className={'form-field-errors ' + (this.props.companyInputError ? '' : 'hide')}>
+              <li className="form-field-error">
+                <label
+                  aria-live="polite"
+                  className="form-inlineMessage"
+                  id="companyInput-field-error-message"
+                  role="alert"
+                >
+                  Company Name is required
+                </label>
+              </li>
+            </ul>
           </div>
         </div>
         <div
@@ -137,7 +169,7 @@ export default class CustomShippingForm extends React.PureComponent<
           <div className="form-field">
             <label id="phoneInput-label" className="form-label optimizedCheckout-form-label">
               Phone Number{' '}
-              {!this.props.isPhoneRequired && (
+              {!this.isFieldRequired('customPhoneInput') && (
                 <small className="optimizedCheckout-contentSecondary">(Optional)</small>
               )}
             </label>
@@ -173,7 +205,10 @@ export default class CustomShippingForm extends React.PureComponent<
         >
           <div className="form-field">
             <label id="addressLine1Input-label" className="form-label optimizedCheckout-form-label">
-              Address
+              Address{' '}
+              {!this.isFieldRequired('customAddressLine1Input') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="addressLine1Input-label addressLine1Input-field-error-message"
@@ -201,11 +236,18 @@ export default class CustomShippingForm extends React.PureComponent<
             </ul>
           </div>
         </div>
-        <div className="dynamic-form-field dynamic-form-field--addressLine2">
+        <div
+          className={
+            'dynamic-form-field dynamic-form-field--addressLine2 ' +
+            (this.props.addressLine2InputError ? 'form-field--error' : '')
+          }
+        >
           <div className="form-field">
             <label id="addressLine2Input-label" className="form-label optimizedCheckout-form-label">
               Apartment/Suite/Building{' '}
-              <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              {!this.isFieldRequired('customAddressLine2Input') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="addressLine2Input-label addressLine2Input-field-error-message"
@@ -217,6 +259,18 @@ export default class CustomShippingForm extends React.PureComponent<
               value={this.props.addressLine2Input}
               onChange={this.onChangeField}
             />
+            <ul className={'form-field-errors ' + (this.props.addressLine2InputError ? '' : 'hide')}>
+              <li className="form-field-error">
+                <label
+                  aria-live="polite"
+                  className="form-inlineMessage"
+                  id="addressLine2Input-field-error-message"
+                  role="alert"
+                >
+                  Apartment/Suite/Building is required
+                </label>
+              </li>
+            </ul>
           </div>
         </div>
 
@@ -231,7 +285,10 @@ export default class CustomShippingForm extends React.PureComponent<
         >
           <div className="form-field">
             <label id="cityInput-label" className="form-label optimizedCheckout-form-label">
-              City
+              City{' '}
+              {!this.isFieldRequired('customCityInput') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="cityInput-label cityInput-field-error-message"
@@ -265,7 +322,10 @@ export default class CustomShippingForm extends React.PureComponent<
         >
           <div className="form-field">
             <label id="postCodeInput-label" className="form-label optimizedCheckout-form-label">
-              Postal Code
+              Postal Code{' '}
+              {!this.isFieldRequired('customPostCodeInput') && (
+                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+              )}
             </label>
             <input
               aria-labelledby="postCodeInput-label postCodeInput-field-error-message"

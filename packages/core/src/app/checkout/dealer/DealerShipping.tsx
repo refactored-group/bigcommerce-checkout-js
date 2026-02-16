@@ -50,6 +50,17 @@ import CountryDropdown from './CountryDropdown';
 
 import './DealerShipping.scss';
 
+const SDK_FIELD_TO_STATE_KEY: Record<string, string> = {
+  firstName: 'customFirstNameInput',
+  lastName: 'customLastNameInput',
+  company: 'customCompanyInput',
+  phone: 'customPhoneInput',
+  address1: 'customAddressLine1Input',
+  address2: 'customAddressLine2Input',
+  city: 'customCityInput',
+  postalCode: 'customPostCodeInput',
+};
+
 const Shipping = lazy(() =>
   retry(
     () =>
@@ -140,6 +151,7 @@ export interface WithCheckoutShippingProps {
     options?: RequestOptions,
   ): Promise<CheckoutSelectors>;
   getFields(countryCode?: string): FormField[];
+  getBillingFields(countryCode?: string): FormField[];
   initializeShippingMethod(options: ShippingInitializeOptions): Promise<CheckoutSelectors>;
   signOut(options?: CustomerRequestOptions): void;
   unassignItem(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
@@ -186,11 +198,13 @@ interface DealerState {
   customLastNameInput: string;
   customLastNameInputError: boolean;
   customCompanyInput: string;
+  customCompanyInputError: boolean;
   customPhoneInput: string;
   customPhoneInputError: boolean;
   customAddressLine1Input: string;
   customAddressLine1InputError: boolean;
   customAddressLine2Input: string;
+  customAddressLine2InputError: boolean;
   customCityInput: string;
   customCityInputError: boolean;
   customPostCodeInput: string;
@@ -257,9 +271,11 @@ class DealerShipping extends React.PureComponent<
       customAddressLine1Input: '',
       customAddressLine1InputError: false,
       customAddressLine2Input: '',
+      customAddressLine2InputError: false,
       customCityInput: '',
       customCityInputError: false,
       customCompanyInput: '',
+      customCompanyInputError: false,
       customFirstNameInput: '',
       customFirstNameInputError: false,
       customLastNameInput: '',
@@ -535,16 +551,12 @@ class DealerShipping extends React.PureComponent<
         [stateKeyError]: false,
       },
       () => {
-        const phoneOk = !this.isPhoneRequired() || this.state.customPhoneInput;
+        const requirements = this.getFieldRequirements();
+        const allRequiredFilled = Object.entries(requirements).every(
+          ([key, isRequired]) => !isRequired || this.state[key],
+        );
 
-        if (
-          this.state.customFirstNameInput &&
-          this.state.customLastNameInput &&
-          this.state.customAddressLine1Input &&
-          this.state.customCityInput &&
-          this.state.customPostCodeInput &&
-          phoneOk
-        ) {
+        if (allRequiredFilled) {
           this.debouncedAssignCustomShippingAddress();
         }
       },
@@ -615,11 +627,13 @@ class DealerShipping extends React.PureComponent<
       customLastNameInput: '',
       customLastNameInputError: false,
       customCompanyInput: '',
+      customCompanyInputError: false,
       customPhoneInput: '',
       customPhoneInputError: false,
       customAddressLine1Input: '',
       customAddressLine1InputError: false,
       customAddressLine2Input: '',
+      customAddressLine2InputError: false,
       customCityInput: '',
       customCityInputError: false,
       customPostCodeInput: '',
@@ -627,11 +641,19 @@ class DealerShipping extends React.PureComponent<
     };
   };
 
-  private isPhoneRequired = (): boolean => {
-    const { getFields } = this.props;
-    const fields = getFields('US');
-    const phoneField = fields.find((field) => field.name === 'phone');
-    return phoneField?.required ?? false;
+  private getFieldRequirements = (): Record<string, boolean> => {
+    const { getFields, getBillingFields } = this.props;
+    const shippingFields = getFields('US');
+    const billingFields = getBillingFields('US');
+    const requirements: Record<string, boolean> = {};
+
+    for (const [sdkName, stateKey] of Object.entries(SDK_FIELD_TO_STATE_KEY)) {
+      const shippingField = shippingFields.find((f) => f.name === sdkName);
+      const billingField = billingFields.find((f) => f.name === sdkName);
+      requirements[stateKey] = (shippingField?.required ?? false) || (billingField?.required ?? false);
+    }
+
+    return requirements;
   };
 
   validateSelectedState: (event: any) => void = async (event) => {
@@ -957,12 +979,14 @@ class DealerShipping extends React.PureComponent<
               lastNameInput={this.state.customLastNameInput}
               lastNameInputError={this.state.customLastNameInputError}
               companyInput={this.state.customCompanyInput}
+              companyInputError={this.state.customCompanyInputError}
               phoneInput={this.state.customPhoneInput}
               phoneInputError={this.state.customPhoneInputError}
-              isPhoneRequired={this.isPhoneRequired()}
+              fieldRequirements={this.getFieldRequirements()}
               addressLine1Input={this.state.customAddressLine1Input}
               addressLine1InputError={this.state.customAddressLine1InputError}
               addressLine2Input={this.state.customAddressLine2Input}
+              addressLine2InputError={this.state.customAddressLine2InputError}
               cityInput={this.state.customCityInput}
               cityInputError={this.state.customCityInputError}
               postCodeInput={this.state.customPostCodeInput}
@@ -1106,20 +1130,10 @@ class DealerShipping extends React.PureComponent<
   private validateCustomShippingFields: () => boolean = () => {
     let isValid = true;
     let firstErrorField: string | null = null;
-    const fields = [
-      'customFirstNameInput',
-      'customLastNameInput',
-      'customAddressLine1Input',
-      'customCityInput',
-      'customPostCodeInput',
-    ];
+    const requirements = this.getFieldRequirements();
 
-    if (this.isPhoneRequired()) {
-      fields.push('customPhoneInput');
-    }
-
-    for (const stateKey of fields) {
-      if (!this.state[stateKey]) {
+    for (const [stateKey, isRequired] of Object.entries(requirements)) {
+      if (isRequired && !this.state[stateKey]) {
         this.setState({ [`${stateKey}Error`]: true });
         if (!firstErrorField) {
           firstErrorField = stateKey.replace('custom', '');
@@ -1190,6 +1204,7 @@ export function mapToDealerShippingProps({
       getShippingAddress,
       getBillingAddress,
       getShippingAddressFields,
+      getBillingAddressFields,
       getShippingCountries,
     },
     statuses: {
@@ -1253,6 +1268,7 @@ export function mapToDealerShippingProps({
     deleteConsignment: checkoutService.deleteConsignment,
     updateConsignment: checkoutService.updateConsignment,
     getFields: getShippingAddressFields,
+    getBillingFields: getBillingAddressFields,
     googleMapsApiKey,
     initializeShippingMethod: checkoutService.initializeShipping,
     isGuest: customer.isGuest,
