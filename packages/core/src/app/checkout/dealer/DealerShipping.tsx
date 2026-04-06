@@ -46,6 +46,7 @@ import { retry, EMPTY_ARRAY } from '../../common/utility';
 import { Form } from '../../ui/form';
 
 import getShippableLineItems from './getShippableLineItems';
+import getRequiredCustomFormFields from './getRequiredCustomFormFields';
 import CountryDropdown from './CountryDropdown';
 
 import './DealerShipping.scss';
@@ -117,6 +118,16 @@ const CustomShippingForm = lazy(() =>
       import(
         /* webpackChunkName: "customShippingForm" */
         './CustomShippingForm'
+      ),
+  ),
+);
+
+const CustomFormFieldsSection = lazy(() =>
+  retry(
+    () =>
+      import(
+        /* webpackChunkName: "customFormFieldsSection" */
+        './CustomFormFieldsSection'
       ),
   ),
 );
@@ -213,6 +224,8 @@ interface DealerState {
   bypassFFL: boolean;
   bypassOption: boolean;
   bypassText: string;
+  customFormFieldValues: Record<string, string | string[] | number>;
+  customFormFieldErrors: Record<string, boolean>;
 }
 
 function DealerMessageListener({ selectDealer }) {
@@ -296,6 +309,8 @@ class DealerShipping extends React.PureComponent<
       bypassFFL: false,
       bypassOption: false,
       bypassText: '',
+      customFormFieldValues: {},
+      customFormFieldErrors: {},
     };
 
     this.debouncedAssignCustomShippingAddress = debounce(async () => {
@@ -313,6 +328,7 @@ class DealerShipping extends React.PureComponent<
         postalCode: this.state.customPostCodeInput,
         countryCode: 'US',
         localizedCountry: 'United States',
+        customFields: this.getCustomFieldsForAddress(),
       };
       const lineItems = this.props.cart.lineItems.physicalItems.map((item) => ({
         itemId: item.id,
@@ -507,9 +523,13 @@ class DealerShipping extends React.PureComponent<
     }));
 
     const fflItems = this.getFFLItems();
+    const dealerWithCustomFields = {
+      ...dealer,
+      customFields: this.getCustomFieldsForAddress(),
+    };
     const consignment = {
       lineItems: this.state.multiShipment ? allCartItems : fflItems,
-      shippingAddress: dealer,
+      shippingAddress: dealerWithCustomFields,
     };
 
     if (!isValidAddress(dealer, getFields(dealer.countryCode))) {
@@ -639,6 +659,44 @@ class DealerShipping extends React.PureComponent<
       customPostCodeInput: '',
       customPostCodeInputError: false,
     };
+  };
+
+  /**
+   * Returns required custom form fields from the SDK's shipping address fields.
+   */
+  private getRequiredCustomFields = (): FormField[] => {
+    const { getFields } = this.props;
+    const shippingFields = getFields('US');
+    return getRequiredCustomFormFields(shippingFields);
+  };
+
+  /**
+   * Handler for custom form field value changes.
+   * Updates the customFormFieldValues state and clears any existing error for that field.
+   */
+  onChangeCustomFormField = (fieldId: string, value: string | string[] | number): void => {
+    this.setState((prevState) => ({
+      customFormFieldValues: {
+        ...prevState.customFormFieldValues,
+        [fieldId]: value,
+      },
+      customFormFieldErrors: {
+        ...prevState.customFormFieldErrors,
+        [fieldId]: false,
+      },
+    }));
+  };
+
+  /**
+   * Maps custom form field values into the format expected by the BigCommerce SDK.
+   * Returns an array of { fieldId, fieldValue } objects.
+   */
+  private getCustomFieldsForAddress = (): Array<{ fieldId: string; fieldValue: string | string[] }> => {
+    const { customFormFieldValues } = this.state;
+    return Object.entries(customFormFieldValues).map(([fieldId, fieldValue]) => ({
+      fieldId,
+      fieldValue: Array.isArray(fieldValue) ? fieldValue : String(fieldValue),
+    }));
   };
 
   private getFieldRequirements = (): Record<string, boolean> => {
@@ -858,6 +916,16 @@ class DealerShipping extends React.PureComponent<
                 </label>
               </div>
             )}
+
+            {/* Required custom form fields (merchant-configured in BC Admin) */}
+            {!this.state.bypassFFL && (
+              <CustomFormFieldsSection
+                fields={this.getRequiredCustomFields()}
+                values={this.state.customFormFieldValues}
+                errors={this.state.customFormFieldErrors}
+                onChange={this.onChangeCustomFormField}
+              />
+            )}
           </div>
         ) : null}
 
@@ -972,32 +1040,41 @@ class DealerShipping extends React.PureComponent<
         {/* ========== Custom Shipping Form (non-FFL) ========== */}
         {this.state.ammoStateFFLRequired === false &&
           !(!customer.isGuest && this.hasOnlyAmmunition()) && (
-            <CustomShippingForm
-              onChangeCustomShippingField={this.onChangeCustomShippingField}
-              firstNameInput={this.state.customFirstNameInput}
-              firstNameInputError={this.state.customFirstNameInputError}
-              lastNameInput={this.state.customLastNameInput}
-              lastNameInputError={this.state.customLastNameInputError}
-              companyInput={this.state.customCompanyInput}
-              companyInputError={this.state.customCompanyInputError}
-              phoneInput={this.state.customPhoneInput}
-              phoneInputError={this.state.customPhoneInputError}
-              fieldRequirements={this.getFieldRequirements()}
-              addressLine1Input={this.state.customAddressLine1Input}
-              addressLine1InputError={this.state.customAddressLine1InputError}
-              addressLine2Input={this.state.customAddressLine2Input}
-              addressLine2InputError={this.state.customAddressLine2InputError}
-              cityInput={this.state.customCityInput}
-              cityInputError={this.state.customCityInputError}
-              postCodeInput={this.state.customPostCodeInput}
-              postCodeInputError={this.state.customPostCodeInputError}
-              countryDropdown={
-                <CountryDropdown
-                  countries={countries}
-                  selectedCountry="US" // Default to US
-                />
-              }
-            />
+            <>
+              <CustomShippingForm
+                onChangeCustomShippingField={this.onChangeCustomShippingField}
+                firstNameInput={this.state.customFirstNameInput}
+                firstNameInputError={this.state.customFirstNameInputError}
+                lastNameInput={this.state.customLastNameInput}
+                lastNameInputError={this.state.customLastNameInputError}
+                companyInput={this.state.customCompanyInput}
+                companyInputError={this.state.customCompanyInputError}
+                phoneInput={this.state.customPhoneInput}
+                phoneInputError={this.state.customPhoneInputError}
+                fieldRequirements={this.getFieldRequirements()}
+                addressLine1Input={this.state.customAddressLine1Input}
+                addressLine1InputError={this.state.customAddressLine1InputError}
+                addressLine2Input={this.state.customAddressLine2Input}
+                addressLine2InputError={this.state.customAddressLine2InputError}
+                cityInput={this.state.customCityInput}
+                cityInputError={this.state.customCityInputError}
+                postCodeInput={this.state.customPostCodeInput}
+                postCodeInputError={this.state.customPostCodeInputError}
+                countryDropdown={
+                  <CountryDropdown
+                    countries={countries}
+                    selectedCountry="US" // Default to US
+                  />
+                }
+              />
+              {/* Required custom form fields (merchant-configured in BC Admin) */}
+              <CustomFormFieldsSection
+                fields={this.getRequiredCustomFields()}
+                values={this.state.customFormFieldValues}
+                errors={this.state.customFormFieldErrors}
+                onChange={this.onChangeCustomFormField}
+              />
+            </>
           )}
 
         {!this.state.manualFflInput && !this.state.bypassFFL && (
@@ -1116,6 +1193,14 @@ class DealerShipping extends React.PureComponent<
       }
     }
 
+    // Validate required custom form fields (merchant-configured in BC Admin)
+    // whenever the FFL checkout flow is active (not bypassed)
+    if (!this.state.bypassFFL) {
+      if (!this.validateCustomFormFields()) {
+        return;
+      }
+    }
+
     try {
       if (customerMessage !== orderComment) {
         await updateCheckout({ customerMessage: orderComment });
@@ -1125,6 +1210,52 @@ class DealerShipping extends React.PureComponent<
     } catch (error) {
       onUnhandledError(error);
     }
+  };
+
+  /**
+   * Validates that all required custom form fields (merchant-configured in BC Admin)
+   * have been filled in. Sets error state and scrolls to first error if validation fails.
+   * Returns true if all required fields are valid.
+   */
+  private validateCustomFormFields: () => boolean = () => {
+    const requiredFields = this.getRequiredCustomFields();
+    const { customFormFieldValues } = this.state;
+    let isValid = true;
+    let firstErrorFieldId: string | null = null;
+    const newErrors: Record<string, boolean> = {};
+
+    for (const field of requiredFields) {
+      const value = customFormFieldValues[field.id];
+      const isEmpty =
+        value === undefined ||
+        value === '' ||
+        (Array.isArray(value) && value.length === 0);
+
+      if (isEmpty) {
+        newErrors[field.id] = true;
+        if (!firstErrorFieldId) {
+          firstErrorFieldId = field.id;
+        }
+        isValid = false;
+      }
+    }
+
+    if (!isValid) {
+      this.setState((prevState) => ({
+        customFormFieldErrors: {
+          ...prevState.customFormFieldErrors,
+          ...newErrors,
+        },
+      }));
+
+      if (firstErrorFieldId) {
+        document
+          .getElementById(`customFormField-${firstErrorFieldId}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+
+    return isValid;
   };
 
   private validateCustomShippingFields: () => boolean = () => {

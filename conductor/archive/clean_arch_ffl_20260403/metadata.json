@@ -1,0 +1,8 @@
+{
+  "track_id": "clean_arch_ffl_20260403",
+  "type": "refactor",
+  "status": "completed",
+  "created_at": "2026-04-03T16:00:00Z",
+  "updated_at": "2026-04-03T16:00:00Z",
+  "description": "Clean architecture refactor of FFL dealer module"
+}
