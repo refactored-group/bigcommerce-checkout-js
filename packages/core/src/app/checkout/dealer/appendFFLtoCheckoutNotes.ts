@@ -1,9 +1,11 @@
-// @ts-nocheck
+import { Checkout, CheckoutSelectors, CheckoutRequestBody } from '@bigcommerce/checkout-sdk';
+import { DealerSelectionData } from './types';
+
 export default async function appendFFLtoCheckoutNotes(
-  checkout,
-  updateCheckout,
-  selectedFFL
-): Promise<CheckoutSelectors> {
+  checkout: Checkout,
+  updateCheckout: (payload: CheckoutRequestBody) => Promise<CheckoutSelectors>,
+  selectedFFL: DealerSelectionData,
+): Promise<void> {
   // Appends FFL information to the checkout order comments in the following format:
   // Format: <existing message>|FFL#<license>|Expiration:<date>|EZcheck:<url>|Certificate:<url>
   const months = {
@@ -21,7 +23,17 @@ export default async function appendFFLtoCheckoutNotes(
     M: '12',
   };
   const expiryMonth = months[selectedFFL.fflID.slice(13, 14)];
-  const expiryYear = `202${selectedFFL.fflID.slice(12, 13)}`;
+  // FFL license encodes expiry year as a single digit at position 12.
+  // This digit represents the last digit of the year (e.g., 5 = 2025, 0 = 2030).
+  // Determine the correct decade based on the current year.
+  const yearDigit = parseInt(selectedFFL.fflID.slice(12, 13), 10);
+  const currentYear = new Date().getFullYear();
+  const currentDecade = Math.floor(currentYear / 10) * 10;
+  let expiryYear = currentDecade + yearDigit;
+  // If the computed year is more than 5 years in the past, it's likely the next decade
+  if (expiryYear < currentYear - 5) {
+    expiryYear += 10;
+  }
 
   // Parse FFL number components for ATF link
   // Split by dashes and get relevant parts

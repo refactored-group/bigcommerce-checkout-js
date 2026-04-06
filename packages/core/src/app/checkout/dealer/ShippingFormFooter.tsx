@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { PureComponent, ReactNode } from 'react';
 import { withFormik } from 'formik';
 
@@ -9,6 +8,7 @@ import { Button, ButtonVariant } from '../../ui/button';
 import { Fieldset, Legend } from '../../ui/form';
 
 import { ShippingOptions } from '../../shipping/shippingOption';
+import { MultiShippingFormValues } from './types';
 
 export interface ShippingFormFooterProps {
     cartHasChanged: boolean;
@@ -17,8 +17,8 @@ export interface ShippingFormFooterProps {
     shouldDisableSubmit: boolean;
     isLoading: boolean;
     customerMessage: string;
-    onSubmit: any;
-    handleSubmit?: any;
+    onSubmit: (values: MultiShippingFormValues) => void;
+    handleSubmit?: (e?: React.FormEvent<HTMLFormElement>) => void;
 }
 
 class ShippingFormFooter extends PureComponent<ShippingFormFooterProps> {
@@ -76,10 +76,6 @@ class ShippingFormFooter extends PureComponent<ShippingFormFooterProps> {
             </div>
         </>;
     }
-}
-
-export interface MultiShippingFormValues {
-    orderComment: string;
 }
 
 export default withLanguage(withFormik<ShippingFormFooterProps & WithLanguageProps, MultiShippingFormValues>({

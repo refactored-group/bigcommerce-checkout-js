@@ -2,355 +2,104 @@ import React from 'react';
 import './CustomShippingForm.scss';
 
 interface CustomShippingFormProps {
-  firstNameInput: string;
-  firstNameInputError: boolean;
-  lastNameInput: string;
-  lastNameInputError: boolean;
-  companyInput: string;
-  companyInputError: boolean;
-  phoneInput: string;
-  phoneInputError: boolean;
+  values: Record<string, string>;
+  errors: Record<string, boolean>;
   fieldRequirements: Record<string, boolean>;
-  addressLine1Input: string;
-  addressLine1InputError: boolean;
-  addressLine2Input: string;
-  addressLine2InputError: boolean;
-  cityInput: string;
-  cityInputError: boolean;
-  postCodeInput: string;
-  postCodeInputError: boolean;
   onChangeCustomShippingField: any;
   countryDropdown?: React.ReactNode;
 }
 
-interface CustomShippingFormState {}
+interface FieldConfig {
+  sdkName: string;
+  inputId: string;
+  label: string;
+  autoComplete: string;
+  type?: string;
+}
 
-export default class CustomShippingForm extends React.PureComponent<
-  CustomShippingFormProps,
-  CustomShippingFormState
-> {
-  constructor(props: any) {
+const FIELD_CONFIGS: FieldConfig[] = [
+  { sdkName: 'firstName', inputId: 'firstNameInput', label: 'First Name', autoComplete: 'given-name' },
+  { sdkName: 'lastName', inputId: 'lastNameInput', label: 'Last Name', autoComplete: 'family-name' },
+  { sdkName: 'company', inputId: 'companyInput', label: 'Company Name', autoComplete: 'organization' },
+  { sdkName: 'phone', inputId: 'phoneInput', label: 'Phone Number', autoComplete: 'tel', type: 'tel' },
+  { sdkName: 'address1', inputId: 'addressLine1Input', label: 'Address', autoComplete: 'address-line1' },
+  { sdkName: 'address2', inputId: 'addressLine2Input', label: 'Apartment/Suite/Building', autoComplete: 'address-line2' },
+];
+
+const FIELD_CONFIGS_AFTER_COUNTRY: FieldConfig[] = [
+  { sdkName: 'city', inputId: 'cityInput', label: 'City', autoComplete: 'address-level2' },
+  { sdkName: 'postalCode', inputId: 'postCodeInput', label: 'Postal Code', autoComplete: 'postal-code' },
+];
+
+export default class CustomShippingForm extends React.PureComponent<CustomShippingFormProps> {
+  constructor(props: CustomShippingFormProps) {
     super(props);
-
     this.onChangeField = this.onChangeField.bind(this);
   }
 
   onChangeField(event: any): void {
     const value = event.target.value;
     const fieldId = event.target.id;
-
     this.props.onChangeCustomShippingField(value, fieldId);
   }
 
-  private isFieldRequired(stateKey: string): boolean {
-    return this.props.fieldRequirements[stateKey] ?? false;
+  private renderField(config: FieldConfig): React.ReactNode {
+    const { values, errors, fieldRequirements } = this.props;
+    const value = values[config.sdkName] || '';
+    const hasError = errors[config.sdkName] || false;
+    const isRequired = fieldRequirements[config.sdkName] ?? false;
+
+    return (
+      <div
+        key={config.inputId}
+        className={
+          'dynamic-form-field dynamic-form-field--' + config.sdkName + ' ' +
+          (hasError ? 'form-field--error' : '')
+        }
+      >
+        <div className="form-field">
+          <label id={`${config.inputId}-label`} className="form-label optimizedCheckout-form-label">
+            {config.label}{' '}
+            {!isRequired && (
+              <small className="optimizedCheckout-contentSecondary">(Optional)</small>
+            )}
+          </label>
+          <input
+            aria-labelledby={`${config.inputId}-label ${config.inputId}-field-error-message`}
+            autoComplete={config.autoComplete}
+            id={config.inputId}
+            type={config.type || 'text'}
+            className="form-input optimizedCheckout-form-input"
+            name={config.sdkName}
+            value={value}
+            onChange={this.onChangeField}
+          />
+          <ul className={'form-field-errors ' + (hasError ? '' : 'hide')}>
+            <li className="form-field-error">
+              <label
+                aria-live="polite"
+                className="form-inlineMessage"
+                id={`${config.inputId}-field-error-message`}
+                role="alert"
+              >
+                {config.label} is required
+              </label>
+            </li>
+          </ul>
+        </div>
+      </div>
+    );
   }
 
   render() {
     return (
       <div className="checkout-address">
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--firstName ' +
-            (this.props.firstNameInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="firstNameInput-label" className="form-label optimizedCheckout-form-label">
-              First Name{' '}
-              {!this.isFieldRequired('customFirstNameInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="firstNameInput-label firstNameInput-field-error-message"
-              autoComplete="given-name"
-              id="firstNameInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="firstName"
-              value={this.props.firstNameInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.firstNameInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  First Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--lastName ' +
-            (this.props.lastNameInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="lastNameInput-label" className="form-label optimizedCheckout-form-label">
-              Last Name{' '}
-              {!this.isFieldRequired('customLastNameInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="lastNameInput-label lastNameInput-field-error-message"
-              autoComplete="family-name"
-              id="lastNameInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="lastName"
-              value={this.props.lastNameInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.lastNameInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="lastNameInput-field-error-message"
-                  role="alert"
-                >
-                  Last Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--company ' +
-            (this.props.companyInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="companyInput-label" className="form-label optimizedCheckout-form-label">
-              Company Name{' '}
-              {!this.isFieldRequired('customCompanyInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="companyInput-label companyInput-field-error-message"
-              autoComplete="organization"
-              id="companyInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="company"
-              value={this.props.companyInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.companyInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="companyInput-field-error-message"
-                  role="alert"
-                >
-                  Company Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--phone ' +
-            (this.props.phoneInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="phoneInput-label" className="form-label optimizedCheckout-form-label">
-              Phone Number{' '}
-              {!this.isFieldRequired('customPhoneInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="phoneInput-label phoneInput-field-error-message"
-              autoComplete="tel"
-              id="phoneInput"
-              type="tel"
-              className="form-input optimizedCheckout-form-input"
-              name="phone"
-              value={this.props.phoneInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.phoneInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="phoneInput-field-error-message"
-                  role="alert"
-                >
-                  Phone Number is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--addressLine1 ' +
-            (this.props.addressLine1InputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="addressLine1Input-label" className="form-label optimizedCheckout-form-label">
-              Address{' '}
-              {!this.isFieldRequired('customAddressLine1Input') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="addressLine1Input-label addressLine1Input-field-error-message"
-              autoComplete="address-line1"
-              id="addressLine1Input"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="address1"
-              value={this.props.addressLine1Input}
-              onChange={this.onChangeField}
-            />
-            <ul
-              className={'form-field-errors ' + (this.props.addressLine1InputError ? '' : 'hide')}
-            >
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="addressLine1Input-field-error-message"
-                  role="alert"
-                >
-                  Address is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--addressLine2 ' +
-            (this.props.addressLine2InputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="addressLine2Input-label" className="form-label optimizedCheckout-form-label">
-              Apartment/Suite/Building{' '}
-              {!this.isFieldRequired('customAddressLine2Input') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="addressLine2Input-label addressLine2Input-field-error-message"
-              autoComplete="address-line2"
-              id="addressLine2Input"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="address2"
-              value={this.props.addressLine2Input}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.addressLine2InputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="addressLine2Input-field-error-message"
-                  role="alert"
-                >
-                  Apartment/Suite/Building is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
+        {FIELD_CONFIGS.map((config) => this.renderField(config))}
 
         {/* Render the country dropdown */}
         {this.props.countryDropdown}
 
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--city ' +
-            (this.props.cityInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="cityInput-label" className="form-label optimizedCheckout-form-label">
-              City{' '}
-              {!this.isFieldRequired('customCityInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="cityInput-label cityInput-field-error-message"
-              autoComplete="address-level2"
-              id="cityInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="city"
-              value={this.props.cityInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.cityInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="cityInput-field-error-message"
-                  role="alert"
-                >
-                  City required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--postCode ' +
-            (this.props.postCodeInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="postCodeInput-label" className="form-label optimizedCheckout-form-label">
-              Postal Code{' '}
-              {!this.isFieldRequired('customPostCodeInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="postCodeInput-label postCodeInput-field-error-message"
-              autoComplete="postal-code"
-              id="postCodeInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="postalCode"
-              value={this.props.postCodeInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.postCodeInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="postCodeInput-field-error-message"
-                  role="alert"
-                >
-                  Postal Code is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
+        {FIELD_CONFIGS_AFTER_COUNTRY.map((config) => this.renderField(config))}
       </div>
     );
   }

@@ -39,7 +39,7 @@ import {
     PaymentMethodProviderType,
 } from './paymentMethod';
 
-import appendFFLtoCheckoutNotes from '../order/appendFFLtoCheckoutNotes';
+import appendFFLtoCheckoutNotes from '../checkout/dealer/appendFFLtoCheckoutNotes';
 
 export interface PaymentProps {
     errorLogger: ErrorLogger;

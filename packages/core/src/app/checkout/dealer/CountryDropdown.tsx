@@ -7,7 +7,7 @@ import { Formik } from 'formik';
 export interface CountryDropdownProps {
   countries: Country[];
   selectedCountry?: string;
-  validateSelectedCountry: (value: string | string[]) => void;
+  validateSelectedCountry?: (value: string | string[]) => void;
 }
 
 export default class CountryDropdown extends PureComponent<CountryDropdownProps> {

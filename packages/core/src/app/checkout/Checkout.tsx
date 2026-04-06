@@ -46,7 +46,7 @@ import { ShippingOptionExpiredError } from '../shipping/shippingOption';
 import { LazyContainer, LoadingNotification, LoadingOverlay } from '../ui/loading';
 import { MobileView } from '../ui/responsive';
 
-import getFflLineItems from '../shipping/getFflLineItems';
+import getFflLineItems from './dealer/getFflLineItems';
 import CheckoutStep from './CheckoutStep';
 import CheckoutStepStatus from './CheckoutStepStatus';
 import CheckoutStepType from './CheckoutStepType';

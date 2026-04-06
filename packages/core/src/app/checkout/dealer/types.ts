@@ -18,6 +18,20 @@ export interface DealerSelectionData extends Omit<Address, 'id'> {
   uuid?: string;
 }
 
+export interface ConsignmentItem {
+  itemId: string;
+  quantity: number;
+}
+
+export interface FFLProduct {
+  id: number;
+  conditions: Array<{ type: string; states: string[] }>;
+}
+
+export interface MultiShippingFormValues {
+  orderComment: string;
+}
+
 export interface DealerData {
   id: string;
   business_name: string;
@@ -29,8 +43,8 @@ export interface DealerData {
   premise_zip: string;
   lat: number;
   lng: number;
-  fees: any[];
-  schedules: any[];
+  fees: Array<{ label: string; amount: string }>;
+  schedules: Array<{ day: string; hours: string }>;
   preferred?: boolean;
   uuid?: string;
 }
