@@ -32,13 +32,12 @@ const MultiCheckboxFormField: FunctionComponent<MultiCheckboxFormFieldProps> = (
 }) => {
     const handleSelectAll = useCallback(() => {
         const checkedValues: string[] = getIn(values, name) || [];
+        const allOptionValues = options.map(({ value }) => value);
+        const missing = difference(allOptionValues, checkedValues);
 
-        difference(
-            options.map(({ value }) => value),
-            checkedValues,
-        ).forEach((val) => push(val));
+        missing.forEach((val) => push(val));
 
-        onChange(getIn(values, name));
+        onChange([...checkedValues, ...missing]);
     }, [name, onChange, options, push, values]);
 
     const handleSelectNone = useCallback(() => {
@@ -46,7 +45,7 @@ const MultiCheckboxFormField: FunctionComponent<MultiCheckboxFormFieldProps> = (
 
         checkedValues.forEach(() => remove(0));
 
-        onChange(getIn(values, name));
+        onChange([]);
     }, [name, onChange, remove, values]);
 
     const handleInputChange = useCallback(
@@ -60,7 +59,13 @@ const MultiCheckboxFormField: FunctionComponent<MultiCheckboxFormFieldProps> = (
                 remove(checkedValues.indexOf(value));
             }
 
-            onChange(getIn(values, name));
+            // Compute the new values directly instead of reading stale Formik state,
+            // since push/remove haven't updated the values object yet in this render cycle.
+            const newValues = checked
+                ? [...checkedValues, value]
+                : checkedValues.filter((v) => v !== value);
+
+            onChange(newValues);
         },
         [name, onChange, push, remove, values],
     );
