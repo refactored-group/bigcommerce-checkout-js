@@ -18,3 +18,12 @@ dist
 /packages/test-framework/report
 /packages/test-framework/screenshots
 /packages/test-framework/videos
+
+# TypeScript incremental build cache (auto-generated per machine)
+**/tsconfig.tsbuildinfo
+
+# Per-user Claude Code settings
+.claude/settings.local.json
+
+# Conductor setup wizard progress marker
+conductor/setup_state.json

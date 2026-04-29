@@ -2,10 +2,6 @@ import React from 'react';
 import './CustomShippingForm.scss';
 
 interface CustomShippingFormProps {
-  firstNameInput: string;
-  firstNameInputError: boolean;
-  lastNameInput: string;
-  lastNameInputError: boolean;
   companyInput: string;
   companyInputError: boolean;
   phoneInput: string;
@@ -49,80 +45,6 @@ export default class CustomShippingForm extends React.PureComponent<
   render() {
     return (
       <div className="checkout-address">
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--firstName ' +
-            (this.props.firstNameInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="firstNameInput-label" className="form-label optimizedCheckout-form-label">
-              First Name{' '}
-              {!this.isFieldRequired('customFirstNameInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="firstNameInput-label firstNameInput-field-error-message"
-              autoComplete="given-name"
-              id="firstNameInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="firstName"
-              value={this.props.firstNameInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.firstNameInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="firstNameInput-field-error-message"
-                  role="alert"
-                >
-                  First Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div
-          className={
-            'dynamic-form-field dynamic-form-field--lastName ' +
-            (this.props.lastNameInputError ? 'form-field--error' : '')
-          }
-        >
-          <div className="form-field">
-            <label id="lastNameInput-label" className="form-label optimizedCheckout-form-label">
-              Last Name{' '}
-              {!this.isFieldRequired('customLastNameInput') && (
-                <small className="optimizedCheckout-contentSecondary">(Optional)</small>
-              )}
-            </label>
-            <input
-              aria-labelledby="lastNameInput-label lastNameInput-field-error-message"
-              autoComplete="family-name"
-              id="lastNameInput"
-              type="text"
-              className="form-input optimizedCheckout-form-input"
-              name="lastName"
-              value={this.props.lastNameInput}
-              onChange={this.onChangeField}
-            />
-            <ul className={'form-field-errors ' + (this.props.lastNameInputError ? '' : 'hide')}>
-              <li className="form-field-error">
-                <label
-                  aria-live="polite"
-                  className="form-inlineMessage"
-                  id="lastNameInput-field-error-message"
-                  role="alert"
-                >
-                  Last Name is required
-                </label>
-              </li>
-            </ul>
-          </div>
-        </div>
         <div
           className={
             'dynamic-form-field dynamic-form-field--company ' +

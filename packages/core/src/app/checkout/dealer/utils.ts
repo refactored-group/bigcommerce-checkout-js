@@ -6,7 +6,14 @@ interface FormatDealerOptions {
 }
 
 /**
- * Formats dealer data consistently for selection across different components
+ * Formats dealer data consistently for selection across different components.
+ *
+ * Note: firstName/lastName are intentionally omitted — the customer's name is
+ * sourced from BC SDK state at the consignment-build site (DealerShipping.tsx#selectDealer)
+ * so the shipping label reads `<customer name> c/o <dealer business name>`, which is
+ * the correct FFL release pattern. See the `automatic-ffl-map` `gb/name-fields-compat-shim`
+ * branch for the cross-repo coordination context.
+ *
  * @param dealer The dealer data object
  * @param options Optional configuration for dealer selection
  * @returns Formatted dealer selection data for checkout
@@ -19,10 +26,8 @@ export const formatDealerForSelection = (
   const formattedPhoneNumber = formatPhoneNumber({ phoneNumber: dealer.phone_number });
 
   return {
-    firstName: dealer.business_name,
-    lastName: dealer.license,
     phone: formattedPhoneNumber,
-    company: `${dealer.business_name} - ${dealer.license}`,
+    company: dealer.business_name,
     address1: dealer.premise_street,
     address2: '',
     city: dealer.premise_city,

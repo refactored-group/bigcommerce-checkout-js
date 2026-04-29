@@ -47,6 +47,7 @@ import { Form } from '../../ui/form';
 
 import getShippableLineItems from './getShippableLineItems';
 import CountryDropdown from './CountryDropdown';
+import CustomerNameFields from './CustomerNameFields';
 
 import './DealerShipping.scss';
 
@@ -263,6 +264,11 @@ class DealerShipping extends React.PureComponent<
   constructor(props: any) {
     super(props);
 
+    // Prefill the recipient name fields from BC SDK state when available so logged-in
+    // customers don't retype. Empty string for guests / pre-billing — they fill it in.
+    const initialFirstName = props.billingAddress?.firstName || props.customer?.firstName || '';
+    const initialLastName = props.billingAddress?.lastName || props.customer?.lastName || '';
+
     this.state = {
       ammoSelectedState: '',
       ammoStateFFLRequired: null,
@@ -276,9 +282,9 @@ class DealerShipping extends React.PureComponent<
       customCityInputError: false,
       customCompanyInput: '',
       customCompanyInputError: false,
-      customFirstNameInput: '',
+      customFirstNameInput: initialFirstName,
       customFirstNameInputError: false,
-      customLastNameInput: '',
+      customLastNameInput: initialLastName,
       customLastNameInputError: false,
       customPhoneInput: '',
       customPhoneInputError: false,
@@ -323,6 +329,14 @@ class DealerShipping extends React.PureComponent<
         address,
         lineItems,
       });
+    }, 500);
+
+    // Re-fired by onChangeCustomShippingField when the customer types into the
+    // top-of-page name inputs AFTER they've already picked a dealer. The 500ms
+    // debounce avoids spamming assignItem on every keystroke. Commits silently
+    // when names are blank (the dealer stays remembered until names arrive).
+    this.debouncedCommitDealerConsignment = debounce(() => {
+      this.commitDealerConsignment();
     }, 500);
 
     fetch(`https://${process.env.HOST}/store-front/api/stores/${this.props.storeHash}`, {
@@ -465,8 +479,22 @@ class DealerShipping extends React.PureComponent<
     }
   };
 
-  handleManualFFLInput: () => void = () => {
+  handleManualFFLInput: () => Promise<void> = async () => {
     const { manualFflInput } = this.state;
+    const { deleteConsignment, onUnhandledError } = this.props;
+
+    // If a dealer-bound FFL consignment was already committed, drop it before
+    // switching to manual input — otherwise it lingers in BC SDK state and can
+    // ride through to checkout under the now-abandoned dealer's address.
+    const existingConsignment = this.getFFLConsignment();
+    if (existingConsignment) {
+      try {
+        await deleteConsignment(existingConsignment.id);
+      } catch (e) {
+        onUnhandledError(new UnassignItemError(e as any));
+      }
+    }
+
     this.setState({
       manualFflInput: !manualFflInput,
       selectedDealer: null,
@@ -494,30 +522,111 @@ class DealerShipping extends React.PureComponent<
       console.log('Error logging dealer selection:', error);
     });
 
-    this.setState({
-      selectedDealer: dealer,
-      showLocator: false,
-    });
+    // Always remember the customer's selection, even if name fields are still
+    // empty. commitDealerConsignment is a no-op until both names are present;
+    // onChangeCustomShippingField re-fires it (debounced) once they are, so the
+    // customer can pick a dealer first and type their name afterward without
+    // having to re-pick the dealer.
+    this.setState(
+      {
+        selectedDealer: dealer,
+        showLocator: false,
+      },
+      () => {
+        this.commitDealerConsignment();
+      },
+    );
+  };
 
-    const { assignItem, getFields, onUnhandledError } = this.props;
+  /**
+   * Builds and submits (or updates) the FFL consignment using the currently
+   * selected dealer (state.selectedDealer) plus the customer-typed recipient
+   * name (state.customFirstNameInput / customLastNameInput). Returns silently
+   * if either input is missing — the dealer selection stays in state and this
+   * method is re-invoked when the customer fills the names.
+   *
+   * Customer name lives on the consignment's shippingAddress.firstName /
+   * .lastName slots; the dealer's business_name flows through `company` from
+   * the iframe payload. Outcome: shipping label reads "<customer name> c/o
+   * <dealer business name>", the correct FFL release pattern.
+   */
+  commitDealerConsignment: () => Promise<void> = async () => {
+    const { assignItem, deleteConsignment, getFields, onUnhandledError } = this.props;
+    const { selectedDealer } = this.state;
+
+    if (!selectedDealer) {
+      return;
+    }
+
+    const customerFirstName = (this.state.customFirstNameInput || '').trim();
+    const customerLastName = (this.state.customLastNameInput || '').trim();
+
+    if (!customerFirstName || !customerLastName) {
+      // Surface the inline "First/Last Name is required" hint so the customer
+      // knows what's still needed, but DON'T pop a modal — they may have just
+      // picked a dealer first on purpose.
+      this.setState({
+        customFirstNameInputError: !customerFirstName,
+        customLastNameInputError: !customerLastName,
+      });
+
+      // If a consignment was already committed (customer filled names earlier
+      // and is now clearing one), drop it. Otherwise the user could proceed
+      // through the shipping step with the now-stale name on the consignment.
+      // The dealer card stays visible (selectedDealer is still in state) so
+      // the customer just has to re-type the name to re-commit.
+      const existingConsignment = this.getFFLConsignment();
+      if (existingConsignment) {
+        try {
+          await deleteConsignment(existingConsignment.id);
+        } catch (e) {
+          onUnhandledError(new UnassignItemError(e as any));
+        }
+      }
+      return;
+    }
 
     const allCartItems = this.state.items.map((item: any) => ({
       itemId: item.id,
       quantity: item.quantity,
     }));
 
+    // The iframe map's postMessage payload (automatic-ffl-map handleSelect) omits a few
+    // fields that BC's address Yup schema may treat as required (notably the full
+    // `country` name, `stateOrProvince`, and `customFields`). Normalize defensively so
+    // a real-world dealer payload doesn't trip BC's local pre-validation.
+    const shippingAddress = {
+      ...selectedDealer,
+      country: selectedDealer.country || selectedDealer.localizedCountry || 'United States',
+      stateOrProvince:
+        selectedDealer.stateOrProvince || selectedDealer.stateOrProvinceCode || '',
+      customFields: selectedDealer.customFields || [],
+      firstName: customerFirstName,
+      lastName: customerLastName,
+    };
+
     const fflItems = this.getFFLItems();
     const consignment = {
       lineItems: this.state.multiShipment ? allCartItems : fflItems,
-      shippingAddress: dealer,
+      shippingAddress,
     };
 
-    if (!isValidAddress(dealer, getFields(dealer.countryCode))) {
+    // Custom shipping fields (merchant-defined extras like "Delivery Instructions") are
+    // captured by the standard BC shipping form, not by the FFL dealer flow — the dealer's
+    // address doesn't carry customer-supplied custom-field input. Strip them from the
+    // local pre-check so a store with required custom fields doesn't block dealer
+    // selection. BC's server-side validation still applies via assignItem; if a custom
+    // field is truly required at the API level, AssignItemFailedError surfaces it.
+    const shippingFields = getFields(shippingAddress.countryCode).filter(
+      (f: any) => !f.custom,
+    );
+
+    if (!isValidAddress(shippingAddress, shippingFields)) {
       return onUnhandledError(new AssignItemInvalidAddressError());
     }
 
     try {
-      this.props.setSelectedFFL(dealer);
+      this.props.setSelectedFFL(shippingAddress);
       await assignItem(consignment);
     } catch (e) {
       onUnhandledError(new AssignItemFailedError(e as any));
@@ -558,6 +667,16 @@ class DealerShipping extends React.PureComponent<
 
         if (allRequiredFilled) {
           this.debouncedAssignCustomShippingAddress();
+        }
+
+        // Dealer-flow re-commit: when the customer types into the top-of-page
+        // name inputs after picking a dealer, debounce a consignment commit so
+        // they can fill the name without having to re-select the dealer.
+        if (
+          this.state.selectedDealer &&
+          (fieldId === 'firstNameInput' || fieldId === 'lastNameInput')
+        ) {
+          this.debouncedCommitDealerConsignment();
         }
       },
     );
@@ -755,6 +874,22 @@ class DealerShipping extends React.PureComponent<
 
     return (
       <section className="ffl-section checkout-form">
+        {/* Recipient name — feeds whichever consignment is built downstream:
+            - firearm / FFL-required ammo path: selectDealer reads these into shippingAddress
+            - non-FFL ammo path: debouncedAssignCustomShippingAddress reads these into address
+            Prefilled in the constructor from billingAddress / customer; empty for guests.
+            Hidden in bypass / manual-FFL modes — the embedded <Shipping /> form below
+            captures the name there, so rendering these would duplicate the inputs. */}
+        {!this.state.bypassFFL && !this.state.manualFflInput && (
+          <CustomerNameFields
+            firstName={this.state.customFirstNameInput}
+            firstNameError={this.state.customFirstNameInputError}
+            lastName={this.state.customLastNameInput}
+            lastNameError={this.state.customLastNameInputError}
+            onChange={this.onChangeCustomShippingField}
+          />
+        )}
+
         {/* If there's no firearm but we have ammo items, show the state dropdown if subscription is active */}
         {this.hasOnlyAmmunition() &&
           this.state.withAmmoSubscription &&
@@ -766,8 +901,9 @@ class DealerShipping extends React.PureComponent<
         {/* ========== FFL Consignment Area ========== */}
         {this.hasFirearms() || (this.hasOnlyAmmunition() && this.state.ammoStateFFLRequired) ? (
           <div className="ffl-consignment-area">
+            {/* No dealer picked yet — show the FFL warning. */}
             {this.state.manualFflInput === false &&
-              (!this.state.selectedDealer || !fflConsignment) &&
+              !this.state.selectedDealer &&
               !this.state.bypassFFL && (
                 <div className="alertBox alertBox--error alertBox--font-color-black">
                   {groupedItemsWithFFLEntries.map(([key, items]) => (
@@ -788,15 +924,19 @@ class DealerShipping extends React.PureComponent<
                 </div>
               )}
 
-            {this.state.selectedDealer && fflConsignment && (
+            {this.state.selectedDealer && (
               <div className="consignment-product-body alertBox--success shipping">
                 {groupedItemsWithFFLEntries.map(([key, items]) => (
                   <li key={items[0].key}>
                     <ItemFFL item={items[0]} quantity={items.length} />
                   </li>
                 ))}
+                {/* Before names commit, fflConsignment doesn't exist yet — fall back
+                    to the dealer payload and tell StaticAddress to skip validation
+                    so it renders without firstName/lastName. */}
                 <StaticAddress
-                  address={fflConsignment.shippingAddress}
+                  address={fflConsignment?.shippingAddress ?? this.state.selectedDealer}
+                  skipValidation={!fflConsignment}
                   type={AddressType.Shipping}
                 />
               </div>
@@ -826,7 +966,7 @@ class DealerShipping extends React.PureComponent<
                   className="button button--primary optimizedCheckout-buttonPrimary"
                   onClick={this.toggleMapSelector}
                 >
-                  {this.state.selectedDealer && fflConsignment ? (
+                  {this.state.selectedDealer ? (
                     <TranslatedString id="shipping.ffl_change_dealer" />
                   ) : (
                     <TranslatedString id="shipping.ffl_select_dealer" />
@@ -974,10 +1114,6 @@ class DealerShipping extends React.PureComponent<
           !(!customer.isGuest && this.hasOnlyAmmunition()) && (
             <CustomShippingForm
               onChangeCustomShippingField={this.onChangeCustomShippingField}
-              firstNameInput={this.state.customFirstNameInput}
-              firstNameInputError={this.state.customFirstNameInputError}
-              lastNameInput={this.state.customLastNameInput}
-              lastNameInputError={this.state.customLastNameInputError}
               companyInput={this.state.customCompanyInput}
               companyInputError={this.state.customCompanyInputError}
               phoneInput={this.state.customPhoneInput}

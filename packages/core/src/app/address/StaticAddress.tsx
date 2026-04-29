@@ -21,6 +21,14 @@ import './StaticAddress.scss';
 export interface StaticAddressProps {
     address: Address;
     type?: AddressType;
+    /**
+     * Skip the `isValidAddress` short-circuit and render whatever the address
+     * carries. Used by the FFL dealer flow, which needs to show the dealer's
+     * info before the customer has typed their recipient name (i.e. before
+     * firstName/lastName are populated). Falls back to `isEmpty` so a fully
+     * empty address still renders nothing.
+     */
+    skipValidation?: boolean;
 }
 
 export interface StaticAddressEditableProps extends StaticAddressProps {
@@ -34,9 +42,11 @@ interface WithCheckoutStaticAddressProps {
 
 const StaticAddress: FunctionComponent<
     StaticAddressEditableProps & WithCheckoutStaticAddressProps
-> = ({ countries, fields, address: addressWithoutLocalization }) => {
+> = ({ countries, fields, address: addressWithoutLocalization, skipValidation }) => {
     const address = localizeAddress(addressWithoutLocalization, countries);
-    const isValid = !fields
+    const isValid = skipValidation
+        ? !isEmpty(address)
+        : !fields
         ? !isEmpty(address)
         : isValidAddress(
               address,
@@ -52,7 +62,13 @@ const StaticAddress: FunctionComponent<
                 </p>
             )}
 
-            {(address.phone || address.company) && (
+            {address.company && (
+                <p className="address-entry">
+                    <span className="org">{address.company}</span>
+                </p>
+            )}
+
+            {address.phone && (
                 <p className="address-entry">
                     <span className="tel">{address.phone}</span>
                 </p>
