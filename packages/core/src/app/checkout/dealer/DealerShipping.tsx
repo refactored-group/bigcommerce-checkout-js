@@ -27,6 +27,7 @@ import hasUnassignedLineItems from '../../shipping/hasUnassignedLineItems';
 import hasSelectedShippingOptions from '../../shipping/hasSelectedShippingOptions';
 import updateShippableItems from '../../shipping/updateShippableItems';
 import AddressSelect from '../../address/AddressSelect';
+import isEqualAddress from '../../address/isEqualAddress';
 import { AddressType, StaticAddress } from '../../address';
 import { TranslatedString } from '@bigcommerce/checkout/locale';
 import { Modal, ModalHeader } from '@bigcommerce/checkout/ui';
@@ -48,6 +49,17 @@ import { Form } from '../../ui/form';
 import getShippableLineItems from './getShippableLineItems';
 import CountryDropdown from './CountryDropdown';
 import CustomerNameFields from './CustomerNameFields';
+import {
+  AmmoCheckoutSessionState,
+  canCommitDealerConsignment,
+  isAmmunitionOnlyCart,
+  isAmmoFflRequiredState,
+  resolveAmmoCheckoutSessionState,
+  resolveFflRecipientName,
+  shouldDisableFflShippingSubmit,
+  shouldShowAmmoAddressSelector,
+  shouldShowCustomerRecipientNameFields,
+} from './utils';
 
 import './DealerShipping.scss';
 
@@ -71,6 +83,11 @@ const Shipping = lazy(() =>
       ),
   ),
 );
+
+// CheckoutStep unmounts Shipping while Billing is active. Keep the buyer's ammo
+// state choice for that page lifetime only; a full checkout reload evaluates the
+// destination again instead of inheriting a persisted BigCommerce consignment.
+let ammoCheckoutSessionState: AmmoCheckoutSessionState | null = null;
 
 const ItemFFL = lazy(() =>
   retry(
@@ -214,6 +231,7 @@ interface DealerState {
   bypassFFL: boolean;
   bypassOption: boolean;
   bypassText: string;
+  useGenericFflRecipientName: boolean;
 }
 
 function DealerMessageListener({ selectDealer }) {
@@ -268,10 +286,14 @@ class DealerShipping extends React.PureComponent<
     // customers don't retype. Empty string for guests / pre-billing — they fill it in.
     const initialFirstName = props.billingAddress?.firstName || props.customer?.firstName || '';
     const initialLastName = props.billingAddress?.lastName || props.customer?.lastName || '';
+    const restoredAmmoState = resolveAmmoCheckoutSessionState(
+      props.cart.id,
+      ammoCheckoutSessionState,
+    );
 
     this.state = {
-      ammoSelectedState: '',
-      ammoStateFFLRequired: null,
+      ammoSelectedState: restoredAmmoState?.ammoSelectedState ?? '',
+      ammoStateFFLRequired: restoredAmmoState?.ammoStateFFLRequired ?? null,
       announcement: '',
       createCustomerAddressError: null,
       customAddressLine1Input: '',
@@ -302,6 +324,7 @@ class DealerShipping extends React.PureComponent<
       bypassFFL: false,
       bypassOption: false,
       bypassText: '',
+      useGenericFflRecipientName: false,
     };
 
     this.debouncedAssignCustomShippingAddress = debounce(async () => {
@@ -347,20 +370,30 @@ class DealerShipping extends React.PureComponent<
     })
       .then((res) => res.json())
       .then((data) => {
+        const useGenericFflRecipientName = data.use_generic_ffl_recipient_name === true;
         const merchantStates = data.merchant.merchant_states.filter(
           (merchantState) => merchantState.enabled,
         );
 
         this.props.setFFLtoOrderComments(data.ffl_to_order_comments);
         this.props.setWithAmmoSubscription(data.with_ammo_subscription);
-        this.setState({
-          announcement: data.announcement,
-          multiShipment: data.multi_shipment,
-          isLoading: false,
-          withAmmoSubscription: data.with_ammo_subscription,
-          bypassOption: data.bypass_option,
-          bypassText: data.bypass_text,
-        });
+        this.setState(
+          {
+            announcement: data.announcement,
+            multiShipment: data.multi_shipment,
+            withAmmoSubscription: data.with_ammo_subscription,
+            bypassOption: data.bypass_option,
+            bypassText: data.bypass_text,
+            useGenericFflRecipientName,
+          },
+          () => {
+            this.setState({ isLoading: false }, () => {
+              if (useGenericFflRecipientName && this.state.selectedDealer) {
+                this.commitDealerConsignment();
+              }
+            });
+          },
+        );
       })
       .catch(console.log);
   }
@@ -431,11 +464,27 @@ class DealerShipping extends React.PureComponent<
   }
 
   /**
-   * Checks if the cart contains only ammunition (no firearms)
+   * Checks whether the ammo state-selection flow applies. Ordinary products
+   * may also be present; firearms may not.
    */
   private hasOnlyAmmunition(): boolean {
     const { fflConsignmentItems, stateRestrictedConsignmentItems } = this.props;
     return fflConsignmentItems.length === 0 && stateRestrictedConsignmentItems.length > 0;
+  }
+
+  /**
+   * Checks whether every shippable cart item is ammunition.
+   */
+  private hasAmmunitionOnlyCart(): boolean {
+    const { cart, stateRestrictedConsignmentItems } = this.props;
+    const cartItemIds = cart.lineItems.physicalItems
+      .filter((item) => !item.addedByPromotion)
+      .map((item) => item.id as string);
+    const ammunitionItemIds = stateRestrictedConsignmentItems.map(
+      (item) => item.itemId as string,
+    );
+
+    return isAmmunitionOnlyCart(cartItemIds, ammunitionItemIds);
   }
 
   /**
@@ -446,6 +495,41 @@ class DealerShipping extends React.PureComponent<
     const fflItems = this.getFFLItems();
     return fflItems.length > 0;
   }
+
+  private isAmmoStateSelectionPending(): boolean {
+    return (
+      this.hasOnlyAmmunition() &&
+      this.state.withAmmoSubscription &&
+      this.state.ammoStateFFLRequired === null
+    );
+  }
+
+  /**
+   * Returns the persisted customer address used for direct shipping, if one is
+   * still present in checkout state. Matching against the customer's address
+   * book avoids mistaking an FFL consignment address for the saved address.
+   */
+  private getSelectedSavedAddress(): Address | undefined {
+    const { consignments, customer } = this.props;
+
+    return consignments.find((consignment) =>
+      customer.addresses.some((address) => isEqualAddress(address, consignment.shippingAddress)),
+    )?.shippingAddress;
+  }
+
+  private rememberAmmoCheckoutSessionState = (
+    stateCode: string,
+    ammoStateFFLRequired: boolean | null,
+  ): void => {
+    ammoCheckoutSessionState =
+      stateCode && ammoStateFFLRequired !== null
+        ? {
+            ammoSelectedState: stateCode,
+            ammoStateFFLRequired,
+            cartId: this.props.cart.id,
+          }
+        : null;
+  };
 
   // ----------------------
   // Event Handlers
@@ -540,34 +624,38 @@ class DealerShipping extends React.PureComponent<
 
   /**
    * Builds and submits (or updates) the FFL consignment using the currently
-   * selected dealer (state.selectedDealer) plus the customer-typed recipient
-   * name (state.customFirstNameInput / customLastNameInput). Returns silently
-   * if either input is missing — the dealer selection stays in state and this
-   * method is re-invoked when the customer fills the names.
+   * selected dealer plus either the customer recipient name or the configured
+   * generic FFL recipient name. When customer names are required, it returns
+   * silently if either input is missing and retries as the customer types.
    *
-   * Customer name lives on the consignment's shippingAddress.firstName /
-   * .lastName slots; the dealer's business_name flows through `company` from
-   * the iframe payload. Outcome: shipping label reads "<customer name> c/o
-   * <dealer business name>", the correct FFL release pattern.
+   * The recipient name lives in shippingAddress.firstName / .lastName. The
+   * dealer business name always remains in `company` from the iframe payload.
    */
   commitDealerConsignment: () => Promise<void> = async () => {
     const { assignItem, deleteConsignment, getFields, onUnhandledError } = this.props;
     const { selectedDealer } = this.state;
+    const fflItems = this.getFFLItems();
 
-    if (!selectedDealer) {
+    if (!canCommitDealerConsignment(Boolean(selectedDealer), fflItems.length)) {
       return;
     }
 
-    const customerFirstName = (this.state.customFirstNameInput || '').trim();
-    const customerLastName = (this.state.customLastNameInput || '').trim();
+    const recipientName = resolveFflRecipientName({
+      customerFirstName: this.state.customFirstNameInput,
+      customerLastName: this.state.customLastNameInput,
+      useGenericRecipientName: this.state.useGenericFflRecipientName,
+    });
 
-    if (!customerFirstName || !customerLastName) {
+    if (
+      !this.state.useGenericFflRecipientName &&
+      (!recipientName.firstName || !recipientName.lastName)
+    ) {
       // Surface the inline "First/Last Name is required" hint so the customer
       // knows what's still needed, but DON'T pop a modal — they may have just
       // picked a dealer first on purpose.
       this.setState({
-        customFirstNameInputError: !customerFirstName,
-        customLastNameInputError: !customerLastName,
+        customFirstNameInputError: !recipientName.firstName,
+        customLastNameInputError: !recipientName.lastName,
       });
 
       // If a consignment was already committed (customer filled names earlier
@@ -601,11 +689,10 @@ class DealerShipping extends React.PureComponent<
       stateOrProvince:
         selectedDealer.stateOrProvince || selectedDealer.stateOrProvinceCode || '',
       customFields: selectedDealer.customFields || [],
-      firstName: customerFirstName,
-      lastName: customerLastName,
+      firstName: recipientName.firstName,
+      lastName: recipientName.lastName,
     };
 
-    const fflItems = this.getFFLItems();
     const consignment = {
       lineItems: this.state.multiShipment ? allCartItems : fflItems,
       shippingAddress,
@@ -674,6 +761,7 @@ class DealerShipping extends React.PureComponent<
         // they can fill the name without having to re-select the dealer.
         if (
           this.state.selectedDealer &&
+          this.hasAnyFflItems() &&
           (fieldId === 'firstNameInput' || fieldId === 'lastNameInput')
         ) {
           this.debouncedCommitDealerConsignment();
@@ -693,19 +781,13 @@ class DealerShipping extends React.PureComponent<
     } = this.props;
     const { withAmmoSubscription } = this.state;
 
-    let fflRestrictedStates = [];
-
-    if (stateRestrictedConsignmentItems.length > 0) {
-      let fflRestrictedProduct = fflProducts.find(product => product.conditions.length > 0);
-      let condition = fflRestrictedProduct.conditions.find(condition => condition.type == "ship_state");
-      fflRestrictedStates = condition.states;
-    }
-
     // Skip state validation if there are firearms and ammo with an ammo subscription
     const skipStateValidation =
-      withAmmoSubscription && fflConsignmentItems.length > 0 && stateRestrictedConsignmentItems.length > 0;
+      withAmmoSubscription &&
+      fflConsignmentItems.length > 0 &&
+      stateRestrictedConsignmentItems.length > 0;
 
-    const fflRequired = skipStateValidation || fflRestrictedStates.includes(stateCode);
+    const fflRequired = skipStateValidation || isAmmoFflRequiredState(stateCode, fflProducts);
 
     // Check if we're transitioning from FFL required to non-FFL required
     const wasFFLRequired = this.state.ammoStateFFLRequired;
@@ -728,10 +810,18 @@ class DealerShipping extends React.PureComponent<
 
       // If transitioning from FFL required to non-FFL required, clear the shipping form
       if (wasFFLRequired === true && !fflRequired) {
-        Object.assign(newState, this.getClearedCustomShippingFields());
+        this.debouncedCommitDealerConsignment.cancel();
+        this.props.setSelectedFFL(null);
+        Object.assign(newState, this.getClearedCustomShippingFields(), {
+          selectedDealer: null,
+          showLocator: false,
+        });
       }
 
-      this.setState(newState as DealerState, resolve);
+      this.setState(newState as DealerState, () => {
+        this.rememberAmmoCheckoutSessionState(stateCode, newState.ammoStateFFLRequired ?? null);
+        resolve();
+      });
     });
   };
 
@@ -789,7 +879,14 @@ class DealerShipping extends React.PureComponent<
     itemId: string,
     itemKey: string,
   ) => Promise<void> = async (address, itemId, itemKey) => {
-    const { assignItem, onUnhandledError, getFields, stateRestrictedConsignmentItems, customer } = this.props;
+    const { assignItem, onUnhandledError, getFields, stateRestrictedConsignmentItems, customer } =
+      this.props;
+
+    // The store response determines whether ammo is FFL-bound. Do not assign
+    // the cart against the constructor's temporary default before it arrives.
+    if (this.state.isLoading) {
+      return;
+    }
 
     if (!isValidAddress(address, getFields(address.countryCode))) {
       return onUnhandledError(new AssignItemInvalidAddressError());
@@ -870,25 +967,36 @@ class DealerShipping extends React.PureComponent<
 
     // Grab the consignment that contains FFL items (if any)
     const fflConsignment = this.getFFLConsignment();
+    const selectedFflAddress = fflConsignment?.shippingAddress ?? this.state.selectedDealer;
+    const selectedSavedAddress = this.getSelectedSavedAddress();
     const { itemAddingAddress } = this.state;
 
     return (
       <section className="ffl-section checkout-form">
-        {/* Recipient name — feeds whichever consignment is built downstream:
-            - firearm / FFL-required ammo path: selectDealer reads these into shippingAddress
-            - non-FFL ammo path: debouncedAssignCustomShippingAddress reads these into address
+        {/* Customer recipient name — feeds whichever consignment needs it downstream:
+            - firearm / FFL-required ammo path: hidden when the generic name is enabled
+            - guest non-FFL ammo path: debouncedAssignCustomShippingAddress reads these into address
+            - signed-in ammo path: saved-address names are reused until an FFL is required
             Prefilled in the constructor from billingAddress / customer; empty for guests.
             Hidden in bypass / manual-FFL modes — the embedded <Shipping /> form below
             captures the name there, so rendering these would duplicate the inputs. */}
-        {!this.state.bypassFFL && !this.state.manualFflInput && (
-          <CustomerNameFields
-            firstName={this.state.customFirstNameInput}
-            firstNameError={this.state.customFirstNameInputError}
-            lastName={this.state.customLastNameInput}
-            lastNameError={this.state.customLastNameInputError}
-            onChange={this.onChangeCustomShippingField}
-          />
-        )}
+        {!this.state.bypassFFL &&
+          !this.state.manualFflInput &&
+          shouldShowCustomerRecipientNameFields({
+            ammoStateFflRequired: this.state.ammoStateFFLRequired,
+            hasFflItems: this.hasAnyFflItems(),
+            hasOnlyAmmunition: this.hasOnlyAmmunition(),
+            isGuest: customer.isGuest,
+            useGenericRecipientName: this.state.useGenericFflRecipientName,
+          }) && (
+            <CustomerNameFields
+              firstName={this.state.customFirstNameInput}
+              firstNameError={this.state.customFirstNameInputError}
+              lastName={this.state.customLastNameInput}
+              lastNameError={this.state.customLastNameInputError}
+              onChange={this.onChangeCustomShippingField}
+            />
+          )}
 
         {/* If there's no firearm but we have ammo items, show the state dropdown if subscription is active */}
         {this.hasOnlyAmmunition() &&
@@ -903,7 +1011,7 @@ class DealerShipping extends React.PureComponent<
           <div className="ffl-consignment-area">
             {/* No dealer picked yet — show the FFL warning. */}
             {this.state.manualFflInput === false &&
-              !this.state.selectedDealer &&
+              !selectedFflAddress &&
               !this.state.bypassFFL && (
                 <div className="alertBox alertBox--error alertBox--font-color-black">
                   {groupedItemsWithFFLEntries.map(([key, items]) => (
@@ -924,7 +1032,7 @@ class DealerShipping extends React.PureComponent<
                 </div>
               )}
 
-            {this.state.selectedDealer && (
+            {selectedFflAddress && (
               <div className="consignment-product-body alertBox--success shipping">
                 {groupedItemsWithFFLEntries.map(([key, items]) => (
                   <li key={items[0].key}>
@@ -935,7 +1043,7 @@ class DealerShipping extends React.PureComponent<
                     to the dealer payload and tell StaticAddress to skip validation
                     so it renders without firstName/lastName. */}
                 <StaticAddress
-                  address={fflConsignment?.shippingAddress ?? this.state.selectedDealer}
+                  address={selectedFflAddress}
                   skipValidation={!fflConsignment}
                   type={AddressType.Shipping}
                 />
@@ -966,7 +1074,7 @@ class DealerShipping extends React.PureComponent<
                   className="button button--primary optimizedCheckout-buttonPrimary"
                   onClick={this.toggleMapSelector}
                 >
-                  {this.state.selectedDealer ? (
+                  {selectedFflAddress ? (
                     <TranslatedString id="shipping.ffl_change_dealer" />
                   ) : (
                     <TranslatedString id="shipping.ffl_select_dealer" />
@@ -1080,7 +1188,13 @@ class DealerShipping extends React.PureComponent<
         )}
 
         {/* ========== Address Selector for Logged-in Users with Ammo ========== */}
-        {!customer.isGuest && this.hasOnlyAmmunition() && !this.state.bypassFFL && (
+        {shouldShowAmmoAddressSelector({
+          ammoStateFflRequired: this.state.ammoStateFFLRequired,
+          hasAmmunitionOnlyCart: this.hasAmmunitionOnlyCart(),
+          hasAmmoWithoutFirearms: this.hasOnlyAmmunition(),
+          isBypassEnabled: this.state.bypassFFL,
+          isGuest: customer.isGuest,
+        }) && (
           <div className="ammo-address-selector">
             <legend className="optimizedCheckout-headingSecondary" style={{ marginBottom: '5px' }}>
               Select Shipping Address
@@ -1096,16 +1210,18 @@ class DealerShipping extends React.PureComponent<
               onRequestClose={this.handleCloseAddAddressForm}
               onSaveAddress={this.handleSaveAddress}
             />
-            <AddressSelect
-              addresses={customer.addresses}
-              onSelectAddress={this.handleSelectAddress}
-              onUseNewAddress={this.handleUseNewAddress}
-              selectedAddress={
-                stateRestrictedConsignmentItems.length > 0 &&
-                consignments.length > 0 &&
-                consignments[0].shippingAddress
-              }
-            />
+            {!this.state.isLoading && (
+              <AddressSelect
+                addresses={customer.addresses}
+                onSelectAddress={this.handleSelectAddress}
+                onUseNewAddress={this.handleUseNewAddress}
+                selectedAddress={
+                  this.state.ammoSelectedState !== '' && stateRestrictedConsignmentItems.length > 0
+                    ? selectedSavedAddress
+                    : undefined
+                }
+              />
+            )}
           </div>
         )}
 
@@ -1144,7 +1260,10 @@ class DealerShipping extends React.PureComponent<
             onSubmit={this.handleMultiShippingSubmit}
             shouldDisableSubmit={this.shouldDisableSubmit()}
             shouldShowOrderComments={shouldShowOrderComments}
-            shouldShowShippingOptions={!hasUnassignedLineItems(consignments, cart.lineItems)}
+            shouldShowShippingOptions={
+              !this.isAmmoStateSelectionPending() &&
+              !hasUnassignedLineItems(consignments, cart.lineItems)
+            }
           />
         )}
 
@@ -1236,8 +1355,26 @@ class DealerShipping extends React.PureComponent<
   private handleMultiShippingSubmit: (values: MultiShippingFormValues) => void = async ({
     orderComment,
   }) => {
-    const { customerMessage, updateCheckout, navigateNextStep, onUnhandledError, customer } =
-      this.props;
+    const {
+      cart,
+      consignments,
+      customer,
+      customerMessage,
+      navigateNextStep,
+      onUnhandledError,
+      updateCheckout,
+    } = this.props;
+
+    // Keep the handler safe even if it is triggered outside the disabled button.
+    // A partial non-FFL consignment can already have a quote while restricted ammo
+    // is still unassigned and waiting for a dealer.
+    if (
+      this.state.isLoading ||
+      this.isAmmoStateSelectionPending() ||
+      hasUnassignedLineItems(consignments, cart.lineItems)
+    ) {
+      return;
+    }
 
     // Only validate custom shipping fields if:
     // 1. Ammunition doesn't require FFL shipping (ammoStateFFLRequired is false)
@@ -1311,14 +1448,20 @@ class DealerShipping extends React.PureComponent<
   };
 
   private shouldDisableSubmit: () => boolean = () => {
-    const { isLoading, consignments, isValid } = this.props;
-    const { isUpdatingShippingData } = this.state;
+    const { cart, isLoading, consignments, isValid } = this.props;
+    const { isLoading: isStoreSettingsLoading, isUpdatingShippingData } = this.state;
 
     if (isValid === false) {
       return false;
     }
 
-    return isLoading || isUpdatingShippingData || !hasSelectedShippingOptions(consignments);
+    return shouldDisableFflShippingSubmit({
+      hasSelectedShippingOptions: hasSelectedShippingOptions(consignments),
+      hasUnassignedLineItems: hasUnassignedLineItems(consignments, cart.lineItems),
+      isAmmoStateSelectionPending: this.isAmmoStateSelectionPending(),
+      isLoading: isLoading || isStoreSettingsLoading,
+      isUpdatingShippingData,
+    });
   };
 
   isFFLRequiredState = (stateCode: string): boolean => {

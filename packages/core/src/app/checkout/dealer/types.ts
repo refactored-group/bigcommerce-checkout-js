@@ -1,13 +1,8 @@
 import { Address } from '@bigcommerce/checkout-sdk';
 
-// Customer's firstName/lastName are sourced from BC SDK state (billingAddress → customer)
-// at the consignment-build site in DealerShipping.tsx#commitDealerConsignment, NOT from
-// the dealer payload — they're overridden whether the iframe sent them or not. The map
-// repo (automatic-ffl-map, commit 3757b65) drops these fields from the iframe postMessage
-// payload going forward; the `gb/name-fields-compat-shim` branch keeps re-emitting them
-// during rollout so the WooCommerce fork (which still reads them from the payload) keeps
-// working until it's updated. This fork doesn't need the shim — the Omit below documents
-// the intended contract.
+// firstName/lastName are supplied at the consignment-build site in DealerShipping,
+// using either the customer name from BC SDK state or the merchant-configured generic
+// FFL recipient name. They are not part of the dealer iframe payload.
 export interface DealerSelectionData extends Omit<Address, 'id' | 'firstName' | 'lastName'> {
   phone: string;
   company: string;

@@ -5,14 +5,148 @@ interface FormatDealerOptions {
   shouldSaveAddress?: boolean;
 }
 
+interface ResolveFflRecipientNameOptions {
+  customerFirstName?: string;
+  customerLastName?: string;
+  useGenericRecipientName?: boolean;
+}
+
+export interface FflRecipientName {
+  firstName: string;
+  lastName: string;
+}
+
+export const isAmmunitionOnlyCart = (
+  cartItemIds: string[],
+  ammunitionItemIds: string[],
+): boolean => {
+  if (cartItemIds.length === 0 || ammunitionItemIds.length === 0) {
+    return false;
+  }
+
+  const ammunitionIds = new Set(ammunitionItemIds);
+
+  return cartItemIds.every((itemId) => ammunitionIds.has(itemId));
+};
+
+export const resolveFflRecipientName = ({
+  customerFirstName = '',
+  customerLastName = '',
+  useGenericRecipientName = false,
+}: ResolveFflRecipientNameOptions): FflRecipientName =>
+  useGenericRecipientName
+    ? { firstName: 'FFL', lastName: 'Dealer' }
+    : { firstName: customerFirstName.trim(), lastName: customerLastName.trim() };
+
+interface ShouldShowCustomerRecipientNameFieldsOptions {
+  ammoStateFflRequired: boolean | null;
+  hasFflItems: boolean;
+  hasOnlyAmmunition: boolean;
+  isGuest: boolean;
+  useGenericRecipientName: boolean;
+}
+
+interface FflStateCondition {
+  states?: string[];
+  type?: string;
+}
+
+interface FflProductRestriction {
+  conditions?: FflStateCondition[];
+}
+
+export interface AmmoCheckoutSessionState {
+  ammoSelectedState: string;
+  ammoStateFFLRequired: boolean;
+  cartId: string;
+}
+
+interface ShouldDisableFflShippingSubmitOptions {
+  hasSelectedShippingOptions: boolean;
+  hasUnassignedLineItems: boolean;
+  isAmmoStateSelectionPending: boolean;
+  isLoading: boolean;
+  isUpdatingShippingData: boolean;
+}
+
+interface ShouldShowAmmoAddressSelectorOptions {
+  ammoStateFflRequired: boolean | null;
+  hasAmmunitionOnlyCart: boolean;
+  hasAmmoWithoutFirearms: boolean;
+  isBypassEnabled: boolean;
+  isGuest: boolean;
+}
+
+export const shouldShowCustomerRecipientNameFields = ({
+  ammoStateFflRequired,
+  hasFflItems,
+  hasOnlyAmmunition,
+  isGuest,
+  useGenericRecipientName,
+}: ShouldShowCustomerRecipientNameFieldsOptions): boolean => {
+  if (!isGuest && hasOnlyAmmunition && ammoStateFflRequired !== true) {
+    return false;
+  }
+
+  if (hasOnlyAmmunition && ammoStateFflRequired === null) {
+    return false;
+  }
+
+  return !useGenericRecipientName || !hasFflItems;
+};
+
+export const shouldShowAmmoAddressSelector = ({
+  ammoStateFflRequired,
+  hasAmmunitionOnlyCart,
+  hasAmmoWithoutFirearms,
+  isBypassEnabled,
+  isGuest,
+}: ShouldShowAmmoAddressSelectorOptions): boolean =>
+  !isGuest &&
+  hasAmmoWithoutFirearms &&
+  !isBypassEnabled &&
+  !(hasAmmunitionOnlyCart && ammoStateFflRequired === true);
+
+export const canCommitDealerConsignment = (
+  hasSelectedDealer: boolean,
+  fflItemCount: number,
+): boolean => hasSelectedDealer && fflItemCount > 0;
+
+export const isAmmoFflRequiredState = (
+  stateCode: string,
+  fflProducts: FflProductRestriction[],
+): boolean =>
+  stateCode !== '' &&
+  fflProducts.some((product) =>
+    product.conditions?.some(
+      (condition) => condition.type === 'ship_state' && condition.states?.includes(stateCode),
+    ),
+  );
+
+export const resolveAmmoCheckoutSessionState = (
+  cartId: string,
+  sessionState: AmmoCheckoutSessionState | null,
+): AmmoCheckoutSessionState | null => (sessionState?.cartId === cartId ? sessionState : null);
+
+export const shouldDisableFflShippingSubmit = ({
+  hasSelectedShippingOptions,
+  hasUnassignedLineItems,
+  isAmmoStateSelectionPending,
+  isLoading,
+  isUpdatingShippingData,
+}: ShouldDisableFflShippingSubmitOptions): boolean =>
+  isLoading ||
+  isUpdatingShippingData ||
+  isAmmoStateSelectionPending ||
+  hasUnassignedLineItems ||
+  !hasSelectedShippingOptions;
+
 /**
  * Formats dealer data consistently for selection across different components.
  *
- * Note: firstName/lastName are intentionally omitted — the customer's name is
- * sourced from BC SDK state at the consignment-build site (DealerShipping.tsx#selectDealer)
- * so the shipping label reads `<customer name> c/o <dealer business name>`, which is
- * the correct FFL release pattern. See the `automatic-ffl-map` `gb/name-fields-compat-shim`
- * branch for the cross-repo coordination context.
+ * Note: firstName/lastName are intentionally omitted. DealerShipping supplies either
+ * the customer's name or the merchant-configured generic FFL recipient name when it
+ * builds the consignment. The dealer business name remains in `company`.
  *
  * @param dealer The dealer data object
  * @param options Optional configuration for dealer selection
