@@ -16,3 +16,13 @@ steps:
     - '-r'
     - 'dist/'
     - '${_WWW_BUCKET}/'
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |
+      gsutil -m setmeta \
+        -h 'Cache-Control:no-cache,max-age=0,must-revalidate' \
+        '${_WWW_BUCKET}/manifest.json' \
+        '${_WWW_BUCKET}/auto-loader.js' \
+        '${_WWW_BUCKET}/loader.js'
