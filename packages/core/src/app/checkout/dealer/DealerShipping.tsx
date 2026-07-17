@@ -624,8 +624,8 @@ class DealerShipping extends React.PureComponent<
 
   /**
    * Builds and submits (or updates) the FFL consignment using the currently
-   * selected dealer plus either the customer recipient name or the configured
-   * generic FFL recipient name. When customer names are required, it returns
+   * selected dealer plus either the customer recipient name or the recipient
+   * already resolved by AutoFFL. When customer names are required, it returns
    * silently if either input is missing and retries as the customer types.
    *
    * The recipient name lives in shippingAddress.firstName / .lastName. The
@@ -643,6 +643,8 @@ class DealerShipping extends React.PureComponent<
     const recipientName = resolveFflRecipientName({
       customerFirstName: this.state.customFirstNameInput,
       customerLastName: this.state.customLastNameInput,
+      resolvedFirstName: selectedDealer.firstName,
+      resolvedLastName: selectedDealer.lastName,
       useGenericRecipientName: this.state.useGenericFflRecipientName,
     });
 

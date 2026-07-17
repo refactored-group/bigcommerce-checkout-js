@@ -8,6 +8,8 @@ interface FormatDealerOptions {
 interface ResolveFflRecipientNameOptions {
   customerFirstName?: string;
   customerLastName?: string;
+  resolvedFirstName?: string;
+  resolvedLastName?: string;
   useGenericRecipientName?: boolean;
 }
 
@@ -32,10 +34,12 @@ export const isAmmunitionOnlyCart = (
 export const resolveFflRecipientName = ({
   customerFirstName = '',
   customerLastName = '',
+  resolvedFirstName = '',
+  resolvedLastName = '',
   useGenericRecipientName = false,
 }: ResolveFflRecipientNameOptions): FflRecipientName =>
   useGenericRecipientName
-    ? { firstName: 'FFL', lastName: 'Dealer' }
+    ? { firstName: resolvedFirstName.trim(), lastName: resolvedLastName.trim() }
     : { firstName: customerFirstName.trim(), lastName: customerLastName.trim() };
 
 interface ShouldShowCustomerRecipientNameFieldsOptions {
@@ -144,9 +148,8 @@ export const shouldDisableFflShippingSubmit = ({
 /**
  * Formats dealer data consistently for selection across different components.
  *
- * Note: firstName/lastName are intentionally omitted. DealerShipping supplies either
- * the customer's name or the merchant-configured generic FFL recipient name when it
- * builds the consignment. The dealer business name remains in `company`.
+ * AutoFFL may include a resolved recipient name on the dealer payload. This
+ * formatter transports those values without deciding what the recipient should be.
  *
  * @param dealer The dealer data object
  * @param options Optional configuration for dealer selection
@@ -158,6 +161,13 @@ export const formatDealerForSelection = (
 ): DealerSelectionData => {
   const { shouldSaveAddress = false } = options;
   const formattedPhoneNumber = formatPhoneNumber({ phoneNumber: dealer.phone_number });
+  const shippingRecipient =
+    dealer.shipping_recipient_first_name && dealer.shipping_recipient_last_name
+      ? {
+          firstName: dealer.shipping_recipient_first_name,
+          lastName: dealer.shipping_recipient_last_name,
+        }
+      : {};
 
   return {
     phone: formattedPhoneNumber,
@@ -176,5 +186,6 @@ export const formatDealerForSelection = (
     dealerId: dealer.id,
     customFields: [],
     uuid: dealer.uuid,
+    ...shippingRecipient,
   };
 };

@@ -130,19 +130,23 @@ describe('resolveFflRecipientName', () => {
       resolveFflRecipientName({
         customerFirstName: 'Jane',
         customerLastName: 'Doe',
+        resolvedFirstName: 'FFL',
+        resolvedLastName: 'Receiving',
         useGenericRecipientName: false,
       }),
     ).toEqual({ firstName: 'Jane', lastName: 'Doe' });
   });
 
-  it('uses the generic FFL recipient when the setting is enabled', () => {
+  it('uses the recipient already resolved by AutoFFL when the setting is enabled', () => {
     expect(
       resolveFflRecipientName({
         customerFirstName: 'Jane',
         customerLastName: 'Doe',
+        resolvedFirstName: ' FFL ',
+        resolvedLastName: ' Receiving ',
         useGenericRecipientName: true,
       }),
-    ).toEqual({ firstName: 'FFL', lastName: 'Dealer' });
+    ).toEqual({ firstName: 'FFL', lastName: 'Receiving' });
   });
 });
 
@@ -269,5 +273,29 @@ describe('formatDealerForSelection', () => {
     };
 
     expect(formatDealerForSelection(dealer).company).toBe(dealer.business_name);
+  });
+
+  it('passes through the AutoFFL-resolved recipient name', () => {
+    const dealer: DealerData = {
+      id: '123',
+      business_name: 'ACME Guns',
+      license: '1-23-456-78-9A-01234',
+      phone_number: '5555551234',
+      premise_street: '100 Main St',
+      premise_city: 'Denver',
+      premise_state: 'CO',
+      premise_zip: '80202',
+      lat: 39.7392,
+      lng: -104.9903,
+      fees: [],
+      schedules: [],
+      shipping_recipient_first_name: 'FFL',
+      shipping_recipient_last_name: 'Receiving',
+    };
+
+    expect(formatDealerForSelection(dealer)).toMatchObject({
+      firstName: 'FFL',
+      lastName: 'Receiving',
+    });
   });
 });

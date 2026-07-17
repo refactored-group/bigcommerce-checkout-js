@@ -1,9 +1,11 @@
 import { Address } from '@bigcommerce/checkout-sdk';
 
-// firstName/lastName are supplied at the consignment-build site in DealerShipping,
-// using either the customer name from BC SDK state or the merchant-configured generic
-// FFL recipient name. They are not part of the dealer iframe payload.
+// AutoFFL may resolve an FFL shipping recipient for the selected dealer. Those
+// names are optional because customer naming remains the default when the store
+// setting is disabled.
 export interface DealerSelectionData extends Omit<Address, 'id' | 'firstName' | 'lastName'> {
+  firstName?: string;
+  lastName?: string;
   phone: string;
   company: string;
   address1: string;
@@ -33,5 +35,7 @@ export interface DealerData {
   fees: any[];
   schedules: any[];
   preferred?: boolean;
+  shipping_recipient_first_name?: string;
+  shipping_recipient_last_name?: string;
   uuid?: string;
 }
