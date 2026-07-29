@@ -629,7 +629,7 @@ class DealerShipping extends React.PureComponent<
    * silently if either input is missing and retries as the customer types.
    *
    * The recipient name lives in shippingAddress.firstName / .lastName. The
-   * dealer business name always remains in `company` from the iframe payload.
+   * `company` value is resolved upstream and preserved from the iframe payload.
    */
   commitDealerConsignment: () => Promise<void> = async () => {
     const { assignItem, deleteConsignment, getFields, onUnhandledError } = this.props;
