@@ -9,7 +9,7 @@ export default function ItemFFL(props: any): any {
       </figure>
 
       <div className="consignment-product-body">
-          <h5 className="optimizedCheckout-contentPrimary">
+          <h5 className="automaticFfl-productTitle">
               { `${props.quantity} x ${name}` }
           </h5>
       </div>

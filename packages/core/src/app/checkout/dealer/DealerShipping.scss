@@ -22,6 +22,23 @@
     > .checkout-address.recipient-name-fields {
         margin-bottom: 20px;
     }
+
+    // Keep child content tied to each panel's computed foreground so checkout
+    // theme rules cannot give the title, instructions, or dealer address a
+    // conflicting color. Background and button customization belongs in the
+    // merchant's opt-in stylesheet so missing variables cannot reset defaults.
+    .automaticFfl-panel {
+        .alertBox-message,
+        .alertBox-message p,
+        .checkout-address--static,
+        .checkout-address--static * {
+            color: inherit !important;
+        }
+    }
+
+    .automaticFfl-productTitle {
+        color: inherit !important;
+    }
 }
 
 .modal-iframe-body {

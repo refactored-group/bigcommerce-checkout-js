@@ -1015,7 +1015,7 @@ class DealerShipping extends React.PureComponent<
             {this.state.manualFflInput === false &&
               !selectedFflAddress &&
               !this.state.bypassFFL && (
-                <div className="alertBox alertBox--error alertBox--font-color-black">
+                <div className="alertBox alertBox--error alertBox--font-color-black automaticFfl-panel automaticFfl-panel--warning">
                   {groupedItemsWithFFLEntries.map(([key, items]) => (
                     <li key={items[0].key}>
                       <ItemFFL item={items[0]} quantity={items.length} />
@@ -1035,7 +1035,7 @@ class DealerShipping extends React.PureComponent<
               )}
 
             {selectedFflAddress && (
-              <div className="consignment-product-body alertBox--success shipping">
+              <div className="consignment-product-body alertBox--success shipping automaticFfl-panel automaticFfl-panel--selected">
                 {groupedItemsWithFFLEntries.map(([key, items]) => (
                   <li key={items[0].key}>
                     <ItemFFL item={items[0]} quantity={items.length} />
@@ -1073,7 +1073,7 @@ class DealerShipping extends React.PureComponent<
                 </Modal>
                 <button
                   type="button"
-                  className="button button--primary optimizedCheckout-buttonPrimary"
+                  className="button button--primary optimizedCheckout-buttonPrimary automaticFfl-dealerButton"
                   onClick={this.toggleMapSelector}
                 >
                   {selectedFflAddress ? (
