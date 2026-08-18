@@ -5,6 +5,7 @@ import {
   isAmmunitionOnlyCart,
   isAmmoFflRequiredState,
   resolveAmmoCheckoutSessionState,
+  resolveAmmoRouting,
   resolveFflRecipientName,
   shouldDisableFflShippingSubmit,
   shouldShowAmmoAddressSelector,
@@ -51,19 +52,77 @@ describe('isAmmoFflRequiredState', () => {
   });
 });
 
+describe('resolveAmmoRouting', () => {
+  const mixedCart = {
+    applyAmmoStateRulesInMixedCarts: true,
+    fflProducts,
+    hasAmmunition: true,
+    hasFirearms: true,
+    multiShipment: false,
+    stateCode: 'TX',
+    withAmmoSubscription: true,
+  };
+
+  it('ships mixed-cart ammo normally in an unrestricted state by default', () => {
+    expect(resolveAmmoRouting(mixedCart)).toBe('standard');
+  });
+
+  it('routes mixed-cart ammo to the dealer in a restricted state', () => {
+    expect(resolveAmmoRouting({ ...mixedCart, stateCode: 'CA' })).toBe('ffl');
+  });
+
+  it('preserves legacy mixed-cart routing when the setting is disabled', () => {
+    expect(resolveAmmoRouting({ ...mixedCart, applyAmmoStateRulesInMixedCarts: false })).toBe(
+      'ffl',
+    );
+  });
+
+  it('lets Ship Non-gun items to FFL override mixed-cart state routing', () => {
+    expect(resolveAmmoRouting({ ...mixedCart, multiShipment: true })).toBe('ffl');
+  });
+
+  it('requires a destination before applying state rules', () => {
+    expect(resolveAmmoRouting({ ...mixedCart, stateCode: '' })).toBe('pending');
+  });
+
+  it('keeps ammo-only carts state based regardless of the mixed-cart setting', () => {
+    const ammoOnlyCart = {
+      ...mixedCart,
+      applyAmmoStateRulesInMixedCarts: false,
+      hasFirearms: false,
+    };
+
+    expect(resolveAmmoRouting({ ...ammoOnlyCart, stateCode: '' })).toBe('pending');
+    expect(resolveAmmoRouting({ ...ammoOnlyCart, stateCode: 'CA' })).toBe('ffl');
+    expect(resolveAmmoRouting({ ...ammoOnlyCart, stateCode: 'TX' })).toBe('standard');
+  });
+
+  it('does not apply ammo routing without restricted ammo or the subscription', () => {
+    expect(resolveAmmoRouting({ ...mixedCart, hasAmmunition: false })).toBe('standard');
+    expect(resolveAmmoRouting({ ...mixedCart, withAmmoSubscription: false })).toBe('standard');
+  });
+});
+
 describe('resolveAmmoCheckoutSessionState', () => {
   const sessionState = {
     ammoSelectedState: 'CA',
     ammoStateFFLRequired: true,
     cartId: 'cart-1',
+    customerIdentityKey: 'customer:4',
   };
 
   it('restores state while the same checkout page moves between steps', () => {
-    expect(resolveAmmoCheckoutSessionState('cart-1', sessionState)).toEqual(sessionState);
+    expect(resolveAmmoCheckoutSessionState('cart-1', 'customer:4', sessionState)).toEqual(
+      sessionState,
+    );
   });
 
   it('does not carry state into a different cart', () => {
-    expect(resolveAmmoCheckoutSessionState('cart-2', sessionState)).toBeNull();
+    expect(resolveAmmoCheckoutSessionState('cart-2', 'customer:4', sessionState)).toBeNull();
+  });
+
+  it('does not carry signed-in routing state into a guest checkout', () => {
+    expect(resolveAmmoCheckoutSessionState('cart-1', 'guest:0', sessionState)).toBeNull();
   });
 });
 
@@ -71,6 +130,7 @@ describe('shouldDisableFflShippingSubmit', () => {
   it('blocks a quoted partial consignment while ammo is still unassigned', () => {
     expect(
       shouldDisableFflShippingSubmit({
+        hasAmmoRoutingError: false,
         hasSelectedShippingOptions: true,
         hasUnassignedLineItems: true,
         isAmmoStateSelectionPending: false,
@@ -83,6 +143,7 @@ describe('shouldDisableFflShippingSubmit', () => {
   it('allows checkout once every item is assigned and quoted', () => {
     expect(
       shouldDisableFflShippingSubmit({
+        hasAmmoRoutingError: false,
         hasSelectedShippingOptions: true,
         hasUnassignedLineItems: false,
         isAmmoStateSelectionPending: false,
@@ -95,6 +156,7 @@ describe('shouldDisableFflShippingSubmit', () => {
   it('blocks checkout until the store ammo settings are loaded', () => {
     expect(
       shouldDisableFflShippingSubmit({
+        hasAmmoRoutingError: false,
         hasSelectedShippingOptions: true,
         hasUnassignedLineItems: false,
         isAmmoStateSelectionPending: false,
@@ -107,9 +169,23 @@ describe('shouldDisableFflShippingSubmit', () => {
   it('blocks checkout until the buyer chooses an ammo destination state', () => {
     expect(
       shouldDisableFflShippingSubmit({
+        hasAmmoRoutingError: false,
         hasSelectedShippingOptions: true,
         hasUnassignedLineItems: false,
         isAmmoStateSelectionPending: true,
+        isLoading: false,
+        isUpdatingShippingData: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps checkout blocked after a routing reconciliation failure', () => {
+    expect(
+      shouldDisableFflShippingSubmit({
+        hasAmmoRoutingError: true,
+        hasSelectedShippingOptions: true,
+        hasUnassignedLineItems: false,
+        isAmmoStateSelectionPending: false,
         isLoading: false,
         isUpdatingShippingData: false,
       }),

@@ -37,7 +37,16 @@ import { getConsignment } from '../shipping/consignment.mock';
 import Shipping from '../shipping/Shipping';
 import { getShippingAddress } from '../shipping/shipping-addresses.mock';
 
-import Checkout, { CheckoutProps, WithCheckoutProps } from './Checkout';
+import Checkout, {
+    Checkout as CheckoutComponent,
+    CheckoutProps,
+    deleteConsignmentsSequentially,
+    getCustomerIdentityKey,
+    shouldForceFreshFflShippingStep,
+    shouldRequireFreshFflSelection,
+    shouldResetGuestFflShipping,
+    WithCheckoutProps,
+} from './Checkout';
 import { getCheckout, getCheckoutWithPromotions } from './checkouts.mock';
 import CheckoutStep, { CheckoutStepProps } from './CheckoutStep';
 import CheckoutStepType from './CheckoutStepType';
@@ -50,10 +59,14 @@ describe('Checkout', () => {
     let defaultProps: CheckoutProps & AnalyticsContextProps;
     let embeddedMessengerMock: EmbeddedCheckoutMessenger;
     let extensionService: ExtensionService;
+    let mountCheckout: () => ReactWrapper<any>;
     let subscribeEventEmitter: EventEmitter;
     let analyticsTracker: Partial<AnalyticsEvents>;
 
     beforeEach(() => {
+        global.fetch = jest.fn().mockResolvedValue({
+            json: jest.fn().mockResolvedValue([]),
+        }) as jest.Mock;
         checkoutService = createCheckoutService();
         checkoutState = checkoutService.getState();
         embeddedMessengerMock = createEmbeddedCheckoutMessenger({
@@ -125,10 +138,202 @@ describe('Checkout', () => {
                 </LocaleProvider>
             </CheckoutProvider>
         );
+
+        mountCheckout = () => {
+            const container = mount(<CheckoutTest {...defaultProps} />);
+            const checkout = container.find(CheckoutComponent).instance() as CheckoutComponent;
+
+            act(() => {
+                checkout.setState({ isResolvingFflShipping: false });
+            });
+            container.update();
+
+            return container;
+        };
+    });
+
+    it('uses a stable customer identity key that ignores address-book updates', () => {
+        expect(getCustomerIdentityKey({ id: 4, isGuest: false })).toBe('customer:4');
+        expect(getCustomerIdentityKey({ id: 0, isGuest: true })).toBe('guest:0');
+    });
+
+    it('only resets persisted initial shipping for guest FFL carts', () => {
+        const consignments = [getConsignment()];
+
+        expect(shouldResetGuestFflShipping({ isGuest: true }, true, consignments)).toBe(true);
+        expect(shouldResetGuestFflShipping({ isGuest: false }, true, consignments)).toBe(false);
+        expect(shouldResetGuestFflShipping({ isGuest: true }, false, consignments)).toBe(false);
+        expect(shouldResetGuestFflShipping({ isGuest: true }, true, [])).toBe(false);
+    });
+
+    it('deletes multiple consignments sequentially', async () => {
+        const first = getConsignment();
+        const second = { ...getConsignment(), id: 'consignment-2' };
+        const calls: string[] = [];
+        let releaseFirst: (() => void) | undefined;
+        const firstDelete = new Promise<CheckoutSelectors>((resolve) => {
+            releaseFirst = () => resolve(checkoutState);
+        });
+        const deleteConsignment = jest.fn(async (id: string) => {
+            calls.push(id);
+
+            if (id === first.id) {
+                return firstDelete;
+            }
+
+            return checkoutState;
+        });
+        const deletion = deleteConsignmentsSequentially([first, second], deleteConsignment);
+
+        await Promise.resolve();
+        expect(calls).toEqual([first.id]);
+
+        releaseFirst?.();
+        await deletion;
+
+        expect(calls).toEqual([first.id, second.id]);
+    });
+
+    it('requires a fresh FFL selection after the customer step is complete', () => {
+        expect(
+            shouldRequireFreshFflSelection(
+                [
+                    {
+                        isActive: false,
+                        isBusy: false,
+                        isComplete: true,
+                        isEditable: true,
+                        isRequired: true,
+                        type: CheckoutStepType.Customer,
+                    },
+                ],
+                true,
+                null,
+            ),
+        ).toBe(true);
+    });
+
+    it('does not skip an incomplete customer step to request an FFL selection', () => {
+        expect(
+            shouldRequireFreshFflSelection(
+                [
+                    {
+                        isActive: true,
+                        isBusy: false,
+                        isComplete: false,
+                        isEditable: false,
+                        isRequired: true,
+                        type: CheckoutStepType.Customer,
+                    },
+                ],
+                true,
+                null,
+            ),
+        ).toBe(false);
+    });
+
+    it('retains an explicit dealer selection during same-page step navigation', () => {
+        expect(
+            shouldRequireFreshFflSelection(
+                [
+                    {
+                        isActive: false,
+                        isBusy: false,
+                        isComplete: true,
+                        isEditable: true,
+                        isRequired: true,
+                        type: CheckoutStepType.Customer,
+                    },
+                ],
+                true,
+                { fflID: 'ffl-123' },
+            ),
+        ).toBe(false);
+    });
+
+    it('keeps the refresh guard active after a dealer is selected until Shipping submits', () => {
+        expect(
+            shouldForceFreshFflShippingStep([
+                {
+                    isActive: false,
+                    isBusy: false,
+                    isComplete: true,
+                    isEditable: true,
+                    isRequired: true,
+                    type: CheckoutStepType.Customer,
+                },
+            ]),
+        ).toBe(true);
+    });
+
+    it('forces a refreshed guest through Shipping until that step submits', () => {
+        const makeStep = (
+            type: CheckoutStepType,
+            isActive: boolean,
+            isComplete: boolean,
+        ) => ({
+            isActive,
+            isBusy: false,
+            isComplete,
+            isEditable: isComplete,
+            isRequired: true,
+            type,
+        });
+        const incompleteCustomerSteps = [
+            makeStep(CheckoutStepType.Customer, true, false),
+            makeStep(CheckoutStepType.Shipping, false, true),
+            makeStep(CheckoutStepType.Billing, false, true),
+            makeStep(CheckoutStepType.Payment, false, false),
+        ];
+        const checkout = new CheckoutComponent({
+            analyticsTracker,
+            clearError: jest.fn(),
+            steps: incompleteCustomerSteps,
+        } as any);
+
+        (checkout as any).setState = (update: any, callback?: () => void) => {
+            const nextState =
+                typeof update === 'function'
+                    ? update(checkout.state, checkout.props)
+                    : update;
+            checkout.state = { ...checkout.state, ...nextState };
+            callback?.();
+        };
+        checkout.state = {
+            ...checkout.state,
+            activeStepType: CheckoutStepType.Customer,
+            requiresFreshFflSelection: true,
+            selectedFFL: null,
+        };
+
+        (checkout as any).navigateToNextIncompleteStep();
+
+        expect(checkout.state.activeStepType).toBe(CheckoutStepType.Customer);
+
+        const completedCustomerSteps = incompleteCustomerSteps.map((step) => ({
+            ...step,
+            isActive: step.type === CheckoutStepType.Payment,
+            isComplete: step.type === CheckoutStepType.Customer ? true : step.isComplete,
+        }));
+        (checkout as any).props = { ...checkout.props, steps: completedCustomerSteps };
+        checkout.setState({ selectedFFL: { fflID: 'ffl-123' } });
+
+        (checkout as any).navigateToNextIncompleteStep();
+
+        expect(checkout.state.activeStepType).toBe(CheckoutStepType.Shipping);
+
+        (checkout as any).handleEditStep(CheckoutStepType.Payment);
+
+        expect(checkout.state.activeStepType).toBe(CheckoutStepType.Shipping);
+
+        (checkout as any).handleShippingNextStep(false);
+
+        expect(checkout.state.requiresFreshFflSelection).toBe(false);
+        expect(checkout.state.activeStepType).toBe(CheckoutStepType.Billing);
     });
 
     it('loads checkout when mounted', () => {
-        mount(<CheckoutTest {...defaultProps} />);
+        mountCheckout();
 
         expect(checkoutService.loadCheckout).toHaveBeenCalledWith(defaultProps.checkoutId, {
             params: {
@@ -143,7 +348,7 @@ describe('Checkout', () => {
     it('tracks checkout started when config is ready', async () => {
         jest.spyOn(checkoutState.data, 'getConfig').mockReturnValue(undefined);
 
-        const component = mount(<CheckoutTest {...defaultProps} />);
+        const component = mountCheckout();
 
         component.setProps({ hasConfig: true });
         component.update();
@@ -156,7 +361,7 @@ describe('Checkout', () => {
     it('posts message to parent of embedded checkout when checkout is loaded', async () => {
         jest.spyOn(embeddedMessengerMock, 'postFrameLoaded').mockImplementation();
 
-        mount(<CheckoutTest {...defaultProps} />);
+        mountCheckout();
 
         await new Promise((resolve) => process.nextTick(resolve));
 
@@ -172,7 +377,7 @@ describe('Checkout', () => {
 
         jest.spyOn(defaultProps.embeddedStylesheet, 'append').mockImplementation();
 
-        mount(<CheckoutTest {...defaultProps} />);
+        mountCheckout();
 
         await new Promise((resolve) => process.nextTick(resolve));
 
@@ -188,7 +393,7 @@ describe('Checkout', () => {
             },
         ]);
 
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
 
         await new Promise((resolve) => process.nextTick(resolve));
         container.update();
@@ -205,7 +410,7 @@ describe('Checkout', () => {
             },
         ]);
 
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
 
         await new Promise((resolve) => process.nextTick(resolve));
         container.update();
@@ -221,7 +426,7 @@ describe('Checkout', () => {
     });
 
     it('renders required checkout steps', () => {
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
         const steps = container.find(CheckoutStep);
 
         expect(steps.at(0).prop('type')).toEqual(CheckoutStepType.Customer);
@@ -242,7 +447,7 @@ describe('Checkout', () => {
             },
         });
 
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
         const steps = container.find(CheckoutStep);
 
         // When there's no physical item, shipping step shouldn't be rendered
@@ -252,7 +457,7 @@ describe('Checkout', () => {
     });
 
     it('marks first incomplete step as active by default', async () => {
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
 
         // Wait for initial load to complete
         await new Promise((resolve) => process.nextTick(resolve));
@@ -277,7 +482,7 @@ describe('Checkout', () => {
         // JSDOM does not support `scrollTo`
         window.scrollTo = jest.fn();
 
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
 
         const step = container
             .find(CheckoutStep)
@@ -294,7 +499,7 @@ describe('Checkout', () => {
     });
 
     it('marks step as active when user tries to edit it', () => {
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
 
         let step = container
             .find(CheckoutStep)
@@ -320,7 +525,7 @@ describe('Checkout', () => {
 
         jest.spyOn(checkoutState.data, 'getCheckout').mockReturnValue(checkout);
 
-        const container = mount(<CheckoutTest {...defaultProps} />);
+        const container = mountCheckout();
 
         expect(container.find(PromotionBannerList)).toHaveLength(1);
 
@@ -331,7 +536,7 @@ describe('Checkout', () => {
         let container: ReactWrapper<CheckoutProps & WithCheckoutProps>;
 
         beforeEach(async () => {
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             (container.find(CheckoutStep) as ReactWrapper<CheckoutStepProps>)
                 .findWhere((step) => step.prop('type') === CheckoutStepType.Customer)
@@ -436,17 +641,17 @@ describe('Checkout', () => {
             ).toBe(true);
         });
 
-        it('renders guest form after sign out', () => {
+        it('renders guest form after sign out', async () => {
             checkoutState = { ...checkoutState };
 
             jest.spyOn(checkoutState.data, 'getCustomer').mockReturnValue(getCustomer());
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            (container.find(CustomerInfo) as ReactWrapper<CustomerInfoProps>).prop('onSignOut')!({
-                isCartEmpty: false,
-            });
+            await (container.find(CustomerInfo) as ReactWrapper<CustomerInfoProps>).prop(
+                'onSignOut',
+            )!({ isCartEmpty: false });
 
             jest.spyOn(checkoutState.data, 'getCustomer').mockReturnValue(undefined);
 
@@ -455,7 +660,7 @@ describe('Checkout', () => {
             expect(container.find(Customer).prop('viewType')).toEqual(CustomerViewType.Guest);
         });
 
-        it('navigates to login page if cart is empty after sign out', () => {
+        it('navigates to login page if cart is empty after sign out', async () => {
             checkoutState = { ...checkoutState };
 
             Object.defineProperty(window, 'top', {
@@ -469,17 +674,17 @@ describe('Checkout', () => {
 
             jest.spyOn(checkoutState.data, 'getCustomer').mockReturnValue(getCustomer());
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            (container.find(CustomerInfo) as ReactWrapper<CustomerInfoProps>).prop('onSignOut')!({
-                isCartEmpty: true,
-            });
+            await (container.find(CustomerInfo) as ReactWrapper<CustomerInfoProps>).prop(
+                'onSignOut',
+            )!({ isCartEmpty: true });
 
             expect(window.top?.location.assign).toHaveBeenCalled();
         });
 
-        it('navigates to cart page after sign out if prices are restricted to login', () => {
+        it('navigates to cart page after sign out if prices are restricted to login', async () => {
             checkoutState = { ...checkoutState };
 
             Object.defineProperty(window, 'top', {
@@ -500,12 +705,12 @@ describe('Checkout', () => {
                 },
             });
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            (container.find(CustomerInfo) as ReactWrapper<CustomerInfoProps>).prop('onSignOut')!({
-                isCartEmpty: false,
-            });
+            await (container.find(CustomerInfo) as ReactWrapper<CustomerInfoProps>).prop(
+                'onSignOut',
+            )!({ isCartEmpty: false });
 
             const cartUrl = getStoreConfig().links.cartLink;
 
@@ -550,7 +755,7 @@ describe('Checkout', () => {
         let container: ReactWrapper<CheckoutProps>;
 
         beforeEach(async () => {
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             (container.find(CheckoutStep) as ReactWrapper<CheckoutStepProps>)
                 .findWhere((step) => step.prop('type') === CheckoutStepType.Shipping)
@@ -572,7 +777,7 @@ describe('Checkout', () => {
                 omit(getConsignment(), 'selectedShippingOption'),
             ]);
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             (container.find(CheckoutStep) as ReactWrapper<CheckoutStepProps>)
                 .findWhere((step) => step.prop('type') === CheckoutStepType.Shipping)
@@ -607,7 +812,7 @@ describe('Checkout', () => {
                     }),
             );
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             (container.find(CheckoutStep) as ReactWrapper<CheckoutStepProps>)
                 .findWhere((step) => step.prop('type') === CheckoutStepType.Shipping)
@@ -697,7 +902,7 @@ describe('Checkout', () => {
 
             jest.spyOn(checkoutState.data, 'getCustomer').mockReturnValue(getCustomer());
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             // Wait for initial load to complete
             await new Promise((resolve) => process.nextTick(resolve));
@@ -744,7 +949,7 @@ describe('Checkout', () => {
                 writable: true,
             });
 
-            container = mount(<CheckoutTest {...defaultProps} />);
+            container = mountCheckout();
 
             (container.find(CheckoutStep) as ReactWrapper<CheckoutStepProps>)
                 .findWhere((step) => step.prop('type') === CheckoutStepType.Payment)

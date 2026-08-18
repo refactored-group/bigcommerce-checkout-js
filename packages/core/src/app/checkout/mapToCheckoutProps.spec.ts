@@ -43,4 +43,31 @@ describe('mapToCheckoutProps()', () => {
 
         expect(hasCartChanged).toBe(false);
     });
+
+    it('subscribes to customer identity rather than address-book object changes', () => {
+        let stateSelector: ((state: CheckoutSelectors) => unknown) | undefined;
+        jest.spyOn(checkoutService, 'subscribe').mockImplementation((_subscriber, selector) => {
+            stateSelector = selector as (state: CheckoutSelectors) => unknown;
+
+            return jest.fn();
+        });
+        jest.spyOn(checkoutState.data, 'getCustomer').mockReturnValue({
+            addresses: [],
+            id: 4,
+            isGuest: false,
+        } as any);
+
+        const { subscribeToLogin } = mapToCheckoutProps(contextProps);
+        subscribeToLogin(jest.fn());
+
+        expect(stateSelector?.(checkoutState)).toBe('customer:4');
+
+        jest.spyOn(checkoutState.data, 'getCustomer').mockReturnValue({
+            addresses: [{ id: 10 }],
+            id: 4,
+            isGuest: false,
+        } as any);
+
+        expect(stateSelector?.(checkoutState)).toBe('customer:4');
+    });
 });

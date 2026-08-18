@@ -33,17 +33,23 @@ export default function mapToCheckoutProps({
     } = data.getConfig() || {};
 
     const subscribeToConsignmentsSelector = createSelector(
-        ({ checkoutService: { subscribe } }: CheckoutContextProps) => subscribe,
-        (subscribe) => (subscriber: (state: CheckoutSelectors) => void) => {
+        ({ checkoutService: { subscribe} }: CheckoutContextProps) => subscribe,
+        subscribe => (subscriber: (state: CheckoutSelectors) => void) => {
             return subscribe(subscriber, ({ data: { getConsignments } }) => getConsignments());
-        },
+        }
     );
 
     const subscribeToLoginSelector = createSelector(
-        ({ checkoutService: { subscribe} }: CheckoutContextProps) => subscribe,
-        subscribe => (subscriber: (state: CheckoutSelectors) => void) => {
-            return subscribe(subscriber, ({ data: { getCustomer } }) => getCustomer());
-        }
+        ({ checkoutService: { subscribe } }: CheckoutContextProps) => subscribe,
+        (subscribe) => (subscriber: (state: CheckoutSelectors) => void) => {
+            return subscribe(subscriber, ({ data: { getCustomer } }) => {
+                const customer = getCustomer();
+
+                return customer
+                    ? `${customer.isGuest ? 'guest' : 'customer'}:${customer.id}`
+                    : 'customer:none';
+            });
+        },
     );
     const walletButtonsOnTopFlag = Boolean(checkoutUserExperienceSettings.walletButtonsOnTop);
 

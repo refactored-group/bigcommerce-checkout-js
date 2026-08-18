@@ -105,7 +105,31 @@ describe('CustomerInfo', () => {
 
             await new Promise((resolve) => process.nextTick(resolve));
 
-            expect(handleSignOut).toHaveBeenCalledWith({ isCartEmpty: false });
+            expect(handleSignOut).toHaveBeenCalledWith({
+                checkoutState: checkoutService.getState(),
+                isCartEmpty: false,
+            });
+        });
+
+        it('waits for async sign-out cleanup before completing', async () => {
+            const cleanupError = new Error('cleanup failed');
+            jest.spyOn(checkoutService, 'signOutCustomer').mockResolvedValue(
+                checkoutService.getState(),
+            );
+            const handleSignOut = jest.fn().mockRejectedValue(cleanupError);
+            const handleSignOutError = jest.fn();
+            const component = mount(
+                <CustomerInfoTest
+                    onSignOut={handleSignOut}
+                    onSignOutError={handleSignOutError}
+                />,
+            );
+
+            component.find('[data-test="sign-out-link"]').simulate('click');
+
+            await new Promise((resolve) => process.nextTick(resolve));
+
+            expect(handleSignOutError).toHaveBeenCalledWith(cleanupError);
         });
 
         it('triggers completion callback if able to sign out but cart is empty', async () => {

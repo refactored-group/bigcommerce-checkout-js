@@ -12,11 +12,12 @@ import { Button, ButtonSize, ButtonVariant } from '../ui/button';
 import canSignOut, { isSupportedSignoutMethod } from './canSignOut';
 
 export interface CustomerInfoProps {
-    onSignOut?(event: CustomerSignOutEvent): void;
+    onSignOut?(event: CustomerSignOutEvent): void | Promise<void>;
     onSignOutError?(error: CustomError): void;
 }
 
 export interface CustomerSignOutEvent {
+    checkoutState?: CheckoutSelectors;
     isCartEmpty: boolean;
 }
 
@@ -40,16 +41,16 @@ const CustomerInfo: FunctionComponent<CustomerInfoProps & WithCheckoutCustomerIn
     const handleSignOut: () => Promise<void> = async () => {
         try {
             if (isSupportedSignoutMethod(methodId)) {
-                await signOut({ methodId });
-                onSignOut({ isCartEmpty: false });
+                const checkoutState = await signOut({ methodId });
+                await onSignOut({ checkoutState, isCartEmpty: false });
                 window.location.reload();
             } else {
-                await signOut();
-                onSignOut({ isCartEmpty: false });
+                const checkoutState = await signOut();
+                await onSignOut({ checkoutState, isCartEmpty: false });
             }
         } catch (error) {
             if (isErrorWithType(error) && error.type === 'checkout_not_available') {
-                onSignOut({ isCartEmpty: true });
+                await onSignOut({ isCartEmpty: true });
             } else {
                 onSignOutError(error);
             }

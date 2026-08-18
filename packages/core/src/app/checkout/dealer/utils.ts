@@ -55,17 +55,31 @@ interface FflStateCondition {
   type?: string;
 }
 
-interface FflProductRestriction {
+export interface FflProductRestriction {
   conditions?: FflStateCondition[];
+}
+
+export type AmmoRoutingDecision = 'ffl' | 'pending' | 'standard';
+
+interface ResolveAmmoRoutingOptions {
+  applyAmmoStateRulesInMixedCarts: boolean;
+  fflProducts: FflProductRestriction[];
+  hasAmmunition: boolean;
+  hasFirearms: boolean;
+  multiShipment: boolean;
+  stateCode: string;
+  withAmmoSubscription: boolean;
 }
 
 export interface AmmoCheckoutSessionState {
   ammoSelectedState: string;
   ammoStateFFLRequired: boolean;
   cartId: string;
+  customerIdentityKey: string;
 }
 
 interface ShouldDisableFflShippingSubmitOptions {
+  hasAmmoRoutingError: boolean;
   hasSelectedShippingOptions: boolean;
   hasUnassignedLineItems: boolean;
   isAmmoStateSelectionPending: boolean;
@@ -127,12 +141,43 @@ export const isAmmoFflRequiredState = (
     ),
   );
 
+export const resolveAmmoRouting = ({
+  applyAmmoStateRulesInMixedCarts,
+  fflProducts,
+  hasAmmunition,
+  hasFirearms,
+  multiShipment,
+  stateCode,
+  withAmmoSubscription,
+}: ResolveAmmoRoutingOptions): AmmoRoutingDecision => {
+  if (!hasAmmunition || !withAmmoSubscription) {
+    return 'standard';
+  }
+
+  if (hasFirearms && (multiShipment || !applyAmmoStateRulesInMixedCarts)) {
+    return 'ffl';
+  }
+
+  const normalizedStateCode = stateCode.trim().toUpperCase();
+
+  if (!normalizedStateCode) {
+    return 'pending';
+  }
+
+  return isAmmoFflRequiredState(normalizedStateCode, fflProducts) ? 'ffl' : 'standard';
+};
+
 export const resolveAmmoCheckoutSessionState = (
   cartId: string,
+  customerIdentityKey: string,
   sessionState: AmmoCheckoutSessionState | null,
-): AmmoCheckoutSessionState | null => (sessionState?.cartId === cartId ? sessionState : null);
+): AmmoCheckoutSessionState | null =>
+  sessionState?.cartId === cartId && sessionState.customerIdentityKey === customerIdentityKey
+    ? sessionState
+    : null;
 
 export const shouldDisableFflShippingSubmit = ({
+  hasAmmoRoutingError,
   hasSelectedShippingOptions,
   hasUnassignedLineItems,
   isAmmoStateSelectionPending,
@@ -141,6 +186,7 @@ export const shouldDisableFflShippingSubmit = ({
 }: ShouldDisableFflShippingSubmitOptions): boolean =>
   isLoading ||
   isUpdatingShippingData ||
+  hasAmmoRoutingError ||
   isAmmoStateSelectionPending ||
   hasUnassignedLineItems ||
   !hasSelectedShippingOptions;

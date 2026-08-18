@@ -50,6 +50,7 @@ import getFflLineItems from '../shipping/getFflLineItems';
 import CheckoutStep from './CheckoutStep';
 import CheckoutStepStatus from './CheckoutStepStatus';
 import CheckoutStepType from './CheckoutStepType';
+import getCheckoutStepStatuses from './getCheckoutStepStatuses';
 import CheckoutSupport from './CheckoutSupport';
 import mapToCheckoutProps from './mapToCheckoutProps';
 import navigateToOrderConfirmation from './navigateToOrderConfirmation';
@@ -106,6 +107,54 @@ const Shipping = lazy(() =>
     ),
 );
 
+export const shouldForceFreshFflShippingStep = (
+    steps: CheckoutStepStatus[],
+): boolean => {
+    const customerStep = find(steps, { type: CheckoutStepType.Customer });
+
+    return Boolean(customerStep?.isComplete);
+};
+
+export const shouldRequireFreshFflSelection = (
+    steps: CheckoutStepStatus[],
+    hasFflRelatedItems: boolean,
+    selectedFFL: any,
+): boolean => {
+    return (
+        hasFflRelatedItems &&
+        !selectedFFL &&
+        shouldForceFreshFflShippingStep(steps)
+    );
+};
+
+export const getCustomerIdentityKey = (customer?: { id: number; isGuest: boolean }): string =>
+    customer ? `${customer.isGuest ? 'guest' : 'customer'}:${customer.id}` : 'customer:none';
+
+export const shouldResetGuestFflShipping = (
+    customer: { isGuest: boolean } | undefined,
+    hasFflRelatedItems: boolean,
+    consignments: Consignment[] = [],
+): boolean => Boolean(customer?.isGuest && hasFflRelatedItems && consignments.length > 0);
+
+export const deleteConsignmentsSequentially = async (
+    consignments: Consignment[],
+    deleteConsignment: (id: string) => Promise<CheckoutSelectors>,
+): Promise<CheckoutSelectors | undefined> => {
+    let currentState: CheckoutSelectors | undefined;
+
+    for (const { id } of consignments) {
+        try {
+            currentState = await deleteConsignment(id);
+        } catch (error) {
+            if ((error as { status?: number })?.status !== 404) {
+                throw error;
+            }
+        }
+    }
+
+    return currentState;
+};
+
 export interface CheckoutProps {
     checkoutId: string;
     containerId: string;
@@ -131,8 +180,12 @@ export interface CheckoutState {
     storeHash: string;
     selectedFFL: any;
     fflToOrderComments: boolean;
+    requiresFreshFflSelection: boolean;
     withAmmoSubscription: boolean;
     buttonConfigs: PaymentMethod[];
+    customerAddressSelection?: Address;
+    hasFflRelatedItems: boolean;
+    isResolvingFflShipping: boolean;
 }
 
 export interface WithCheckoutProps {
@@ -159,9 +212,10 @@ export interface WithCheckoutProps {
     subscribeToLogin(subscriber: (state: CheckoutSelectors) => void): () => void;
     loadShippingAddressFields(): Promise<CheckoutSelectors>;
     loadShippingOptions(): Promise<CheckoutSelectors>;
+    deleteConsignment(id: string): Promise<CheckoutSelectors>;
 }
 
-class Checkout extends Component<
+export class Checkout extends Component<
     CheckoutProps &
         WithCheckoutProps &
         WithLanguageProps &
@@ -171,6 +225,7 @@ class Checkout extends Component<
 > {
     state: CheckoutState = {
         selectedFFL: null,
+        requiresFreshFflSelection: false,
         fflLineItems: [],
         fflProducts: [],
         fflStateRestrictedItems: [],
@@ -186,11 +241,18 @@ class Checkout extends Component<
         hasSelectedShippingOptions: false,
         isSubscribed: false,
         buttonConfigs: [],
+        customerAddressSelection: undefined,
+        hasFflRelatedItems: false,
+        isResolvingFflShipping: true,
     };
 
     private embeddedMessenger?: EmbeddedCheckoutMessenger;
     private unsubscribeFromConsignments?: () => void;
     private unsubscribeFromLogin?: () => void;
+    private customerIdentityKey = 'customer:none';
+    private customerIdentityResetKey?: string;
+    private customerIdentityResetPromise: Promise<void> = Promise.resolve();
+    private isFflRelatedCart = false;
 
     componentWillUnmount(): void {
         if (this.unsubscribeFromConsignments) {
@@ -206,6 +268,102 @@ class Checkout extends Component<
         this.handleBeforeExit();
     }
 
+    private getCheckoutLoadOptions = (): RequestOptions<CheckoutParams> => ({
+        params: {
+            include: [
+                'cart.lineItems.physicalItems.categoryNames',
+                'cart.lineItems.digitalItems.categoryNames',
+            ] as any,
+        },
+    });
+
+    private resetFflShippingState = async (
+        initialState: CheckoutSelectors,
+    ): Promise<CheckoutSelectors> => {
+        const {
+            checkoutId,
+            deleteConsignment,
+            loadCheckout,
+            loadShippingAddressFields,
+            loadShippingOptions,
+        } = this.props;
+        let currentState = initialState;
+
+        // A late DealerShipping mutation can finish during sign-out. Re-read
+        // after each pass so it cannot silently restore a previous customer's
+        // destination after the first deletion snapshot was taken.
+        for (let pass = 0; pass < 3; pass += 1) {
+            const consignments = currentState.data.getConsignments() || [];
+
+            if (consignments.length === 0) {
+                break;
+            }
+
+            currentState =
+                (await deleteConsignmentsSequentially(consignments, deleteConsignment)) ||
+                currentState;
+
+            currentState = await loadCheckout(checkoutId, this.getCheckoutLoadOptions());
+        }
+
+        currentState = await loadCheckout(checkoutId, this.getCheckoutLoadOptions());
+
+        if ((currentState.data.getConsignments() || []).length > 0) {
+            throw new Error('Automatic FFL could not clear the previous shipping destination');
+        }
+
+        await Promise.all([loadShippingAddressFields(), loadShippingOptions()]);
+
+        return currentState;
+    };
+
+    private queueCustomerIdentityReset = (
+        checkoutState: CheckoutSelectors,
+        identityKey = getCustomerIdentityKey(checkoutState.data.getCustomer()),
+    ): Promise<void> => {
+        if (!this.isFflRelatedCart) {
+            return Promise.resolve();
+        }
+
+        if (this.customerIdentityResetKey === identityKey) {
+            return this.customerIdentityResetPromise;
+        }
+
+        this.customerIdentityResetKey = identityKey;
+        this.setState({
+            customerAddressSelection: undefined,
+            isResolvingFflShipping: true,
+            requiresFreshFflSelection: true,
+            selectedFFL: null,
+        });
+
+        this.customerIdentityResetPromise = this.customerIdentityResetPromise
+            .catch(() => undefined)
+            .then(async () => {
+                await this.resetFflShippingState(checkoutState);
+
+                if (this.customerIdentityKey === identityKey) {
+                    this.setState({ isResolvingFflShipping: false });
+                }
+            })
+            .catch((error) => {
+                this.handleUnhandledError(error);
+            });
+
+        return this.customerIdentityResetPromise;
+    };
+
+    private handleCustomerIdentityChanged: (state: CheckoutSelectors) => void = (state) => {
+        const identityKey = getCustomerIdentityKey(state.data.getCustomer());
+
+        if (identityKey === this.customerIdentityKey) {
+            return;
+        }
+
+        this.customerIdentityKey = identityKey;
+        void this.queueCustomerIdentityReset(state, identityKey);
+    };
+
     async componentDidMount(): Promise<void> {
         const {
             analyticsTracker,
@@ -217,19 +375,17 @@ class Checkout extends Component<
             loadCheckout,
             loadPaymentMethodByIds,
             subscribeToConsignments,
-            analyticsTracker,
-            subscribeToLogin
+            subscribeToLogin,
         } = this.props;
 
         try {
-            const [{ data }] = await Promise.all([loadCheckout(checkoutId, {
-                params: {
-                    include: [
-                        'cart.lineItems.physicalItems.categoryNames',
-                        'cart.lineItems.digitalItems.categoryNames',
-                    ] as any, // FIXME: Currently the enum is not exported so it can't be used here.
-                },
-            }), extensionService.loadExtensions()]);
+            const [loadedCheckoutState] = await Promise.all([
+                loadCheckout(checkoutId, this.getCheckoutLoadOptions()),
+                extensionService.loadExtensions(),
+            ]);
+            let checkoutState = loadedCheckoutState;
+            let data = checkoutState.data;
+            this.customerIdentityKey = getCustomerIdentityKey(data.getCustomer());
 
             const providers = data.getConfig()?.checkoutSettings?.remoteCheckoutProviders || [];
             const supportedProviders = getSupportedMethodIds(providers);
@@ -246,7 +402,8 @@ class Checkout extends Component<
 
             const { links: { siteLink = '' } = {} } = data.getConfig() || {};
             const errorFlashMessages = data.getFlashMessages('error') || [];
-            this.setState({ storeHash: data.getConfig()?.storeProfile.storeHash || "" });
+            const storeHash = data.getConfig()?.storeProfile.storeHash || '';
+            this.setState({ storeHash });
 
             if (errorFlashMessages.length) {
                 const { language } = this.props;
@@ -268,7 +425,7 @@ class Checkout extends Component<
             this.unsubscribeFromConsignments = subscribeToConsignments(
                 this.handleConsignmentsUpdated,
             );
-            this.unsubscribeFromLogin = subscribeToLogin(this.handleCustomerLoggedIn);
+            this.unsubscribeFromLogin = subscribeToLogin(this.handleCustomerIdentityChanged);
             this.embeddedMessenger = messenger;
             messenger.receiveStyles((styles) => embeddedStylesheet.append(styles));
             messenger.postFrameLoaded({ contentId: containerId });
@@ -276,23 +433,41 @@ class Checkout extends Component<
 
             analyticsTracker.checkoutBegin();
 
-            const consignments = data.getConsignments();
+            let consignments = data.getConsignments();
             const cart = data.getCart();
+
+            let hasFflRelatedItems = false;
 
             if (cart?.lineItems.physicalItems.length > 0) {
                 try {
-                    const [fflProducts, fflLineItems, fflStateRestrictedItems] = await getFflLineItems(this.state.storeHash, cart);
+                    const [fflProducts, fflLineItems, fflStateRestrictedItems] =
+                        await getFflLineItems(storeHash, cart);
+                    hasFflRelatedItems =
+                        fflLineItems.length > 0 || fflStateRestrictedItems.length > 0;
                     this.setState({ fflLineItems, fflProducts, fflStateRestrictedItems });
                 } catch (error) {
                     this.setState({
                         error: new CustomError({
-                            title: "Error",
-                            message: "Contact customer support to verify your FFL if you have firearm related products in the cart",
+                            title: 'Error',
+                            message:
+                                'Contact customer support to verify your FFL if you have firearm related products in the cart',
                             data: {},
                             name: 'default',
                         }),
                     });
+
+                    return;
                 }
+            }
+
+            this.isFflRelatedCart = hasFflRelatedItems;
+            this.setState({ hasFflRelatedItems });
+
+            if (shouldResetGuestFflShipping(data.getCustomer(), hasFflRelatedItems, consignments)) {
+                this.customerIdentityResetKey = this.customerIdentityKey;
+                checkoutState = await this.resetFflShippingState(checkoutState);
+                data = checkoutState.data;
+                consignments = data.getConsignments();
             }
 
             const hasMultiShippingEnabled =
@@ -310,13 +485,29 @@ class Checkout extends Component<
 
             this.setState({
                 isBillingSameAsShipping: checkoutBillingSameAsShippingEnabled,
+                isResolvingFflShipping: false,
                 isSubscribed: defaultNewsletterSignupOption,
+                requiresFreshFflSelection: hasFflRelatedItems && !this.state.selectedFFL,
             });
 
-            if (isMultiShippingMode) {
-                this.setState({ isMultiShippingMode }, this.handleReady);
-            } else {
+            const requiresFreshFflSelection = shouldRequireFreshFflSelection(
+                getCheckoutStepStatuses(checkoutState),
+                hasFflRelatedItems,
+                this.state.selectedFFL,
+            );
+            const handleInitialReady = () => {
+                if (requiresFreshFflSelection) {
+                    this.navigateToStep(CheckoutStepType.Shipping, { isDefault: true });
+                    return;
+                }
+
                 this.handleReady();
+            };
+
+            if (isMultiShippingMode) {
+                this.setState({ isMultiShippingMode }, handleInitialReady);
+            } else {
+                handleInitialReady();
             }
 
             window.addEventListener('beforeunload', this.handleBeforeExit);
@@ -359,7 +550,13 @@ class Checkout extends Component<
     private renderContent(): ReactNode {
         const { isPending, loginUrl, promotions = [], steps, isShowingWalletButtonsOnTop, extensionState } = this.props;
 
-        const { activeStepType, defaultStepType, isCartEmpty, isRedirecting } = this.state;
+        const {
+            activeStepType,
+            defaultStepType,
+            isCartEmpty,
+            isRedirecting,
+            isResolvingFflShipping,
+        } = this.state;
 
         if (isCartEmpty) {
             return <EmptyCartMessage loginUrl={loginUrl} waitInterval={3000} />;
@@ -370,9 +567,18 @@ class Checkout extends Component<
             : defaultStepType === CheckoutStepType.Payment;
 
         return (
-            <LoadingOverlay hideContentWhenLoading isLoading={isRedirecting}>
+            <LoadingOverlay
+                hideContentWhenLoading
+                isLoading={isRedirecting || isResolvingFflShipping}
+                unmountContentWhenLoading
+            >
                 <div className="layout-main">
-                    <LoadingNotification isLoading={(!isShowingWalletButtonsOnTop && isPending) || extensionState.isShowingLoadingIndicator} />
+                    <LoadingNotification
+                        isLoading={
+                            (!isShowingWalletButtonsOnTop && isPending) ||
+                            extensionState.isShowingLoadingIndicator
+                        }
+                    />
 
                     <PromotionBannerList promotions={promotions} />
 
@@ -515,10 +721,6 @@ class Checkout extends Component<
         );
     }
 
-    private handleConsignmentsAdresses(deleteConsignment, consignments = []) {
-      return Promise.all(consignments.map(({ id }) => deleteConsignment(id)));
-    }
-
     private renderDealerShippingStep(step: CheckoutStepStatus): ReactNode {
           const {
               hasCartChanged,
@@ -552,19 +754,20 @@ class Checkout extends Component<
                   <LazyContainer>
                     <DealerShipping
                         cartHasChanged={ hasCartChanged }
+                        customerAddressSelection={ this.state.customerAddressSelection }
                         fflProducts={ this.state.fflProducts }
-                        handleConsignmentsAdresses={ this.handleConsignmentsAdresses }
                         fflConsignmentItems={ fflConsignmentItems }
                         isMultiShippingMode={ true }
                         navigateNextStep={ this.handleShippingNextStep }
                         onCreateAccount={ this.handleShippingCreateAccount }
-                        onReady={ this.handleReady }
                         onSignIn={ this.handleShippingSignIn }
                         onToggleMultiShipping={ this.handleToggleMultiShipping }
                         onUnhandledError={ this.handleUnhandledError }
                         stateRestrictedConsignmentItems={ stateRestrictedConsignmentItems }
                         storeHash={ this.state.storeHash }
+                        selectedFFL={ this.state.selectedFFL }
                         setSelectedFFL={ this.setSelectedFFL }
+                        setCustomerAddressSelection={ this.setCustomerAddressSelection }
                         setFFLtoOrderComments={ this.setFFLtoOrderComments }
                         setWithAmmoSubscription={ this.setWithAmmoSubscription }
                     />
@@ -692,6 +895,7 @@ class Checkout extends Component<
         options,
     ) => {
         const { steps, analyticsTracker } = this.props;
+        const { requiresFreshFflSelection } = this.state;
         const activeStepIndex = findIndex(steps, { isActive: true });
         const activeStep = activeStepIndex >= 0 && steps[activeStepIndex];
 
@@ -703,6 +907,17 @@ class Checkout extends Component<
 
         if (previousStep) {
             analyticsTracker.trackStepCompleted(previousStep.type);
+        }
+
+        // BigCommerce can consider persisted consignments complete after a
+        // refresh. Once the customer step is complete, force every FFL-related
+        // checkout through Shipping until that step is successfully submitted.
+        if (
+            requiresFreshFflSelection &&
+            shouldForceFreshFflShippingStep(steps)
+        ) {
+            this.navigateToStep(CheckoutStepType.Shipping, options);
+            return;
         }
 
         this.navigateToStep(activeStep.type, options);
@@ -765,21 +980,6 @@ class Checkout extends Component<
         this.setState({ hasSelectedShippingOptions: newHasSelectedShippingOptions });
     };
 
-    // Everytime a user logs in or out we clear the consignment data and reload shipping fields
-    private handleCustomerLoggedIn: (state: CheckoutSelectors) => void = async ({ data }) =>  {
-        const {
-          deleteConsignment,
-          consignments,
-          loadShippingAddressFields,
-          loadShippingOptions
-        } = this.props
-             await this.handleConsignmentsAdresses(deleteConsignment, consignments);
-             await Promise.all([
-                 loadShippingAddressFields(),
-                 loadShippingOptions(),
-             ]);
-    }
-
     private handleCloseErrorModal: () => void = () => {
         this.setState({ error: undefined });
     };
@@ -809,6 +1009,16 @@ class Checkout extends Component<
     };
 
     private handleEditStep: (type: CheckoutStepType) => void = (type) => {
+        if (
+            type !== CheckoutStepType.Customer &&
+            type !== CheckoutStepType.Shipping &&
+            this.state.requiresFreshFflSelection &&
+            shouldForceFreshFflShippingStep(this.props.steps)
+        ) {
+            this.navigateToStep(CheckoutStepType.Shipping);
+            return;
+        }
+
         this.navigateToStep(type);
     };
 
@@ -820,8 +1030,19 @@ class Checkout extends Component<
         this.setState({ isSubscribed: subscribed });
     }
 
-    private handleSignOut: (event: CustomerSignOutEvent) => void = ({ isCartEmpty }) => {
+    private handleSignOut: (event: CustomerSignOutEvent) => Promise<void> = async ({
+        checkoutState,
+        isCartEmpty,
+    }) => {
         const { loginUrl, cartUrl, isPriceHiddenFromGuests, isGuestEnabled } = this.props;
+
+        if (checkoutState) {
+            const identityKey = getCustomerIdentityKey(checkoutState.data.getCustomer());
+            this.customerIdentityKey = identityKey;
+            await this.queueCustomerIdentityReset(checkoutState, identityKey);
+        } else {
+            await this.customerIdentityResetPromise;
+        }
 
         if (isPriceHiddenFromGuests) {
             if (window.top) {
@@ -853,13 +1074,19 @@ class Checkout extends Component<
     private handleShippingNextStep: (isBillingSameAsShipping: boolean) => void = (
         isBillingSameAsShipping,
     ) => {
-        this.setState({ isBillingSameAsShipping });
-
-        if (isBillingSameAsShipping) {
-            this.navigateToNextIncompleteStep();
-        } else {
-            this.navigateToStep(CheckoutStepType.Billing);
-        }
+        this.setState(
+            {
+                isBillingSameAsShipping,
+                requiresFreshFflSelection: false,
+            },
+            () => {
+                if (isBillingSameAsShipping) {
+                    this.navigateToNextIncompleteStep();
+                } else {
+                    this.navigateToStep(CheckoutStepType.Billing);
+                }
+            },
+        );
     };
 
     private handleShippingSignIn: () => void = () => {
@@ -894,6 +1121,10 @@ class Checkout extends Component<
     private setSelectedFFL: () => void = (value) => {
         this.setState({ selectedFFL: value });
     }
+
+    private setCustomerAddressSelection = (customerAddressSelection?: Address): void => {
+        this.setState({ customerAddressSelection });
+    };
 
     private setFFLtoOrderComments: () => void = (value) => {
         this.setState({ fflToOrderComments: value });
