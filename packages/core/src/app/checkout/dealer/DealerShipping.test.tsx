@@ -1,7 +1,10 @@
 import { Address } from '@bigcommerce/checkout-sdk';
-import { identity, isEqual, pickBy } from 'lodash';
+import { groupBy, identity, isEqual, pickBy } from 'lodash';
+
+import { AddressFormModal } from '../../address';
 
 import { DealerShipping } from './DealerShipping';
+import { createFflConsignmentCoordinator } from './fflConsignmentCoordinator';
 
 const customerAddress = {
   address1: '100 Customer Way',
@@ -63,10 +66,25 @@ const makeCheckoutSelectors = (
 
 const makeRequestError = (status: number) => ({ status, type: 'request' });
 
+const findElementsByType = (node: any, type: any): any[] => {
+  if (Array.isArray(node)) {
+    return node.flatMap((child) => findElementsByType(child, type));
+  }
+
+  if (!node?.props) {
+    return [];
+  }
+
+  return [...(node.type === type ? [node] : []), ...findElementsByType(node.props.children, type)];
+};
+
 const makeProps = (isGuest = false) => {
   const props = {
     assignItem: jest.fn().mockResolvedValue({}),
     billingAddress: undefined as Address | undefined,
+    clearConfirmedAmmoRoutingSession: jest.fn(),
+    confirmedAmmoRoutingSession: undefined as any,
+    confirmAmmoRoutingSession: jest.fn(),
     cart: {
       id: 'cart-1',
       lineItems: {
@@ -84,19 +102,34 @@ const makeProps = (isGuest = false) => {
       },
       { id: 'customer-consignment', lineItemIds: ['ammo-1'], shippingAddress: customerAddress },
     ],
+    countries: [
+      {
+        code: 'US',
+        name: 'United States',
+        hasPostalCodes: true,
+        requiresState: true,
+        subdivisions: [
+          { code: 'CA', name: 'California' },
+          { code: 'TX', name: 'Texas' },
+        ],
+      },
+    ],
     customer: { addresses: isGuest ? [] : [customerAddress], id: isGuest ? 0 : 4, isGuest },
     createCustomerAddress: jest.fn().mockResolvedValue({}),
     deleteConsignment: jest.fn().mockResolvedValue({}),
     fflConsignmentItems: [{ itemId: 'gun-1', quantity: 1 }],
+    fflConsignmentCoordinator: undefined as any,
     fflProducts: [{ conditions: [{ states: ['CA', 'NY'], type: 'ship_state' }] }],
-    getCurrentConsignments: jest.fn(),
+    getCheckoutState: jest.fn(),
     getFields: jest.fn().mockReturnValue([]),
+    loadShippingAddressFields: jest.fn().mockResolvedValue({}),
+    loadBillingAddressFields: jest.fn().mockResolvedValue({}),
+    loadShippingOptions: jest.fn().mockResolvedValue({}),
     isLoading: false,
     isValid: true,
     customerMessage: '',
     navigateNextStep: jest.fn(),
     onUnhandledError: jest.fn(),
-    reloadCheckout: jest.fn(),
     selectedFFL: null,
     setFFLtoOrderComments: jest.fn(),
     setCustomerAddressSelection: jest.fn(),
@@ -106,12 +139,16 @@ const makeProps = (isGuest = false) => {
     stateRestrictedConsignmentItems: [{ itemId: 'ammo-1', quantity: 2 }],
     storeHash: 'store-hash',
     unassignItem: jest.fn().mockResolvedValue({}),
-    updateConsignment: jest.fn().mockResolvedValue({}),
     updateCheckout: jest.fn().mockResolvedValue({}),
   };
 
-  props.getCurrentConsignments.mockImplementation(() => props.consignments);
-  props.reloadCheckout.mockImplementation(async () => makeCheckoutSelectors(props));
+  props.getCheckoutState.mockImplementation(() => makeCheckoutSelectors(props));
+  props.fflConsignmentCoordinator = createFflConsignmentCoordinator({
+    assignItemsToAddress: props.assignItem,
+    deleteConsignment: props.deleteConsignment,
+    getState: props.getCheckoutState,
+    unassignItemsToAddress: props.unassignItem,
+  });
 
   return props;
 };
@@ -122,6 +159,7 @@ const makeSubject = (
 ) => {
   const props = makeProps(isGuest);
   prepareProps?.(props);
+  installStatefulConsignmentSdk(props);
   const subject = new DealerShipping(props as any);
 
   (subject as any).setState = (update: any, callback?: () => void) => {
@@ -156,7 +194,7 @@ const normalizeSdkAddress = (address: Address) =>
       countryCode: address.countryCode,
       postalCode: address.postalCode,
       phone: address.phone,
-      customFields: address.customFields,
+      customFields: address.customFields?.length ? address.customFields : undefined,
     },
     identity,
   );
@@ -244,23 +282,6 @@ const installStatefulConsignmentSdk = (
     }),
   );
 
-  props.updateConsignment.mockImplementation((request: any) =>
-    enqueueShippingOperation(async () => {
-      const target = props.consignments.find(({ id }) => id === request.id);
-
-      if (!target) {
-        throw new Error('No consignment found for the specified ID');
-      }
-
-      target.lineItemIds = (request.lineItems || []).map((lineItem: any) => lineItem.itemId);
-      props.consignments = props.consignments.filter(
-        (consignment) => consignment.lineItemIds.length > 0,
-      );
-
-      return selectors();
-    }),
-  );
-
   props.deleteConsignment.mockImplementation((consignmentId: string) =>
     enqueueShippingOperation(async () => {
       const target = props.consignments.find(({ id }) => id === consignmentId);
@@ -274,6 +295,8 @@ const installStatefulConsignmentSdk = (
       return selectors();
     }),
   );
+
+  props.getCheckoutState.mockImplementation(selectors);
 
   return {
     ownerIds: (itemId: string) =>
@@ -313,258 +336,101 @@ describe('DealerShipping ammo reconciliation', () => {
     global.fetch = jest.fn(() => new Promise(() => undefined)) as jest.Mock;
   });
 
-  it('uses live SDK consignments before attempting an ammo deletion', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    props.getCurrentConsignments.mockReturnValue([]);
+  it('loads native shipping data before reporting the shipping step ready', async () => {
+    const { subject } = makeSubject(true);
+    const onReady = jest.fn();
 
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(true);
+    (subject.props as any).onReady = onReady;
 
-    expect(props.deleteConsignment).not.toHaveBeenCalled();
-    expect(props.reloadCheckout).not.toHaveBeenCalled();
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
+    await subject.componentDidMount();
+
+    expect(subject.props.loadShippingAddressFields).toHaveBeenCalledTimes(1);
+    expect(subject.props.loadShippingOptions).toHaveBeenCalledTimes(1);
+    expect(subject.props.loadBillingAddressFields).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts a delete 404 only after reload verifies that ammo is unassigned', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    installStatefulConsignmentSdk(props);
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockImplementation(async () => {
-      props.consignments = [];
-
-      return makeCheckoutSelectors(props);
-    });
-
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(true);
-
-    expect(props.deleteConsignment).toHaveBeenCalledTimes(1);
-    expect(props.deleteConsignment).toHaveBeenCalledWith('stale-ammo-consignment');
-    expect(props.reloadCheckout).toHaveBeenCalledTimes(1);
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
-  });
-
-  it('retries a delete once with the refreshed consignment ID', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    const model = installStatefulConsignmentSdk(props);
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockImplementation(async () => {
-      props.consignments = [
-        {
-          id: 'fresh-ammo-consignment',
-          lineItemIds: ['ammo-1'],
-          shippingAddress: customerAddress,
-        },
+  it('routes a firearm-only cart through the coordinator', async () => {
+    const explicitDealer = { ...dealerAddress, fflID: 'ffl-firearm-only' };
+    const { props, subject } = makeSubject(false, (nextProps) => {
+      nextProps.cart.lineItems.physicalItems = [
+        { addedByPromotion: false, id: 'gun-1', parentId: null, quantity: 1 },
       ];
-
-      return makeCheckoutSelectors(props);
-    });
-
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(true);
-
-    expect(props.deleteConsignment.mock.calls).toEqual([
-      ['stale-ammo-consignment'],
-      ['fresh-ammo-consignment'],
-    ]);
-    expect(props.reloadCheckout).toHaveBeenCalledTimes(1);
-    expect(model.ownerIds('ammo-1')).toEqual([]);
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
-  });
-
-  it('updates a refreshed mixed consignment instead of deleting its regular item', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    props.cart.lineItems.physicalItems.push({
-      addedByPromotion: false,
-      id: 'regular-1',
-      parentId: null,
-      quantity: 1,
+      nextProps.consignments = [];
+      nextProps.stateRestrictedConsignmentItems = [];
     });
     const model = installStatefulConsignmentSdk(props);
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockImplementation(async () => {
-      props.consignments = [
-        {
-          id: 'fresh-mixed-consignment',
-          lineItemIds: ['ammo-1', 'regular-1'],
-          shippingAddress: customerAddress,
-        },
-      ];
 
-      return makeCheckoutSelectors(props);
+    await subject.selectDealer(explicitDealer);
+
+    expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL', fflID: 'ffl-firearm-only' }),
+      lineItems: [{ itemId: 'gun-1', quantity: 1 }],
     });
-
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(true);
-
-    expect(props.deleteConsignment).toHaveBeenCalledTimes(1);
-    expect(props.updateConsignment).toHaveBeenCalledWith({
-      id: 'fresh-mixed-consignment',
-      lineItems: [{ itemId: 'regular-1', quantity: 1 }],
-    });
-    expect(model.ownerIds('ammo-1')).toEqual([]);
-    expect(model.ownerIds('regular-1')).toEqual(['fresh-mixed-consignment']);
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
+    expect(model.ownerIds('gun-1')).toHaveLength(1);
+    expect(props.setSelectedFFL).toHaveBeenCalledWith(
+      expect.objectContaining({ fflID: 'ffl-firearm-only' }),
+    );
   });
 
-  it('surfaces a second delete 404 without attempting a third mutation', async () => {
+  it('routes a restricted ammo-only cart to the selected dealer', async () => {
+    const explicitDealer = { ...dealerAddress, fflID: 'ffl-ammo-only' };
     const { props, subject } = makeAmmoOnlySubject();
-    installStatefulConsignmentSdk(props);
-    props.deleteConsignment
-      .mockRejectedValueOnce(makeRequestError(404))
-      .mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockImplementation(async () => {
-      props.consignments = [
-        {
-          id: 'fresh-ammo-consignment',
-          lineItemIds: ['ammo-1'],
-          shippingAddress: customerAddress,
-        },
-      ];
+    const model = installStatefulConsignmentSdk(props);
 
-      return makeCheckoutSelectors(props);
+    await subject.selectDealer(explicitDealer);
+
+    expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL', fflID: 'ffl-ammo-only' }),
+      lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
     });
+    expect(model.ownerIds('ammo-1')).toHaveLength(1);
+    expect(props.setSelectedFFL).toHaveBeenCalledWith(
+      expect.objectContaining({ fflID: 'ffl-ammo-only' }),
+    );
+  });
 
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(false);
+  it('keeps manual mode disabled when native unassignment fails', async () => {
+    const { props, subject } = makeSubject();
+    props.unassignItem.mockRejectedValueOnce(new Error('native unassignment failed'));
 
-    expect(props.deleteConsignment.mock.calls).toEqual([
-      ['stale-ammo-consignment'],
-      ['fresh-ammo-consignment'],
-    ]);
-    expect(props.reloadCheckout).toHaveBeenCalledTimes(1);
-    expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
+    await subject.handleManualFFLInput();
+
+    expect(subject.state.manualFflInput).toBe(false);
+    expect(subject.state.selectedDealer).toBe(dealerAddress);
     expect(subject.state.ammoRoutingError).toBe(true);
-    expect(subject.state.requiresAmmoRoutingReconciliation).toBe(true);
+    expect(props.setSelectedFFL).not.toHaveBeenCalledWith(null);
+    expect(props.onUnhandledError).toHaveBeenCalledWith(expect.any(Error));
   });
 
-  it('does not reload after a non-404 ammo deletion failure', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(500));
+  it('lets bypass supersede in-flight routing without recreating consignments', async () => {
+    let releaseAssign!: () => void;
+    let markAssignStarted!: () => void;
+    const assignStarted = new Promise<void>((resolve) => {
+      markAssignStarted = resolve;
+    });
+    const assignBlocked = new Promise<void>((resolve) => {
+      releaseAssign = resolve;
+    });
+    const { props, subject } = makeSubject();
+    props.cart.id = 'bypass-cart';
 
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(false);
-
-    expect(props.deleteConsignment).toHaveBeenCalledTimes(1);
-    expect(props.reloadCheckout).not.toHaveBeenCalled();
-    expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects a delete 404 when reload does not return the active checkout', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockResolvedValue(
-      makeCheckoutSelectors(props, { checkoutId: 'different-checkout' }),
-    );
-
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(false);
-
-    expect(props.reloadCheckout).toHaveBeenCalledTimes(1);
-    expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
-  });
-
-  it('keeps checkout blocked when delete 404 recovery cannot reload checkout', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockRejectedValueOnce(new Error('Checkout reload failed'));
-
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(false);
-
-    expect(props.reloadCheckout).toHaveBeenCalledTimes(1);
-    expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
-    expect(subject.state.ammoRoutingError).toBe(true);
-    expect(subject.state.requiresAmmoRoutingReconciliation).toBe(true);
-  });
-
-  it('abandons stale 404 recovery when the routing revision changes during reload', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    let resolveReload: (selectors: any) => void = () => undefined;
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockReturnValue(
-      new Promise((resolve) => {
-        resolveReload = resolve;
-      }),
-    );
-    (subject as any).ammoRoutingRevision = 1;
-
-    const result = (subject as any).unassignAmmunition(1);
-    await Promise.resolve();
-    await Promise.resolve();
-    (subject as any).ammoRoutingRevision = 2;
-    resolveReload(makeCheckoutSelectors(props));
-
-    await expect(result).resolves.toBe(false);
-    expect(props.deleteConsignment).toHaveBeenCalledTimes(1);
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
-  });
-
-  it('does not remove ammo that reaches a selected dealer during 404 recovery', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    installStatefulConsignmentSdk(props);
-    let resolveReload: (selectors: any) => void = () => undefined;
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockReturnValue(
-      new Promise((resolve) => {
-        resolveReload = resolve;
-      }),
-    );
-
-    const result = (subject as any).unassignAmmunition();
-    await Promise.resolve();
-    await Promise.resolve();
-    subject.selectDealer(dealerAddress);
-    await (subject as any).pendingDealerCommit;
-    resolveReload(makeCheckoutSelectors(props));
-
-    await expect(result).resolves.toBe(true);
-    expect(props.deleteConsignment).toHaveBeenCalledTimes(1);
-    expect(props.updateConsignment).not.toHaveBeenCalled();
-    expect(
-      props.consignments.some(
-        (consignment) =>
-          consignment.lineItemIds.includes('ammo-1') &&
-          isEqual(
-            normalizeSdkAddress(consignment.shippingAddress),
-            normalizeSdkAddress(committedDealerAddress),
-          ),
-      ),
-    ).toBe(true);
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
-  });
-
-  it('removes refreshed customer ammo when dealer selection remains incomplete', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    installStatefulConsignmentSdk(props);
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-    props.reloadCheckout.mockImplementation(async () => {
-      props.consignments = [
-        {
-          id: 'fresh-customer-consignment',
-          lineItemIds: ['ammo-1'],
-          shippingAddress: customerAddress,
-        },
-      ];
-      subject.state = { ...subject.state, selectedDealer: dealerAddress };
-
-      return makeCheckoutSelectors(props);
+    installStatefulConsignmentSdk(props, async () => {
+      markAssignStarted();
+      await assignBlocked;
     });
 
-    await expect((subject as any).unassignAmmunition()).resolves.toBe(true);
+    const routing = (subject as any).reconcileAmmoRouting('CA', californiaCustomerAddress);
+    await assignStarted;
 
-    expect(props.deleteConsignment.mock.calls).toEqual([
-      ['stale-ammo-consignment'],
-      ['fresh-customer-consignment'],
-    ]);
-    expect(props.onUnhandledError).not.toHaveBeenCalled();
-  });
+    const bypass = (subject as any).handleBypassFFLToggle({ target: { checked: true } });
+    releaseAssign();
+    await Promise.all([routing, bypass]);
 
-  it('keeps manual cleanup delete 404s terminal', async () => {
-    const { props, subject } = makeAmmoOnlySubject();
-    props.deleteConsignment.mockRejectedValueOnce(makeRequestError(404));
-
-    await expect(
-      (subject as any).unassignLineItemsFromConsignment(
-        props.consignments[0],
-        props.stateRestrictedConsignmentItems,
-      ),
-    ).resolves.toBe('failure');
-
-    expect(props.reloadCheckout).not.toHaveBeenCalled();
-    expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
+    expect(subject.state.bypassFFL).toBe(true);
+    expect(subject.state.ammoRoutingError).toBe(false);
+    expect(props.consignments).toEqual([]);
+    expect(props.deleteConsignment).toHaveBeenCalledTimes(1);
   });
 
   it('waits for a logged-in ammo customer to select a persisted direct-shipping address', async () => {
@@ -664,7 +530,7 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(firstCheckout.subject.state.ammoSelectedState).toBe('CA');
     expect(firstCheckout.subject.state.ammoStateFFLRequired).toBe(true);
     expect(firstCheckout.subject.state.showAmmoFflNotice).toBe(true);
-    expect(firstCheckout.props.deleteConsignment).toHaveBeenCalledTimes(1);
+    expect(firstCheckout.props.unassignItem).toHaveBeenCalledTimes(1);
   });
 
   it('waits for address selection in a signed-in firearm, ammo, and regular-item cart', async () => {
@@ -719,7 +585,7 @@ describe('DealerShipping ammo reconciliation', () => {
     ).toBeUndefined();
     expect(props.setSelectedFFL).not.toHaveBeenCalled();
     expect(props.deleteConsignment).not.toHaveBeenCalled();
-    expect(props.updateConsignment).not.toHaveBeenCalled();
+    expect(props.unassignItem).not.toHaveBeenCalled();
     expect(model.ownerIds('ammo-1')).toEqual(['customer-consignment']);
     expect(model.ownerIds('gun-1')).toEqual(['customer-consignment']);
     expect(model.ownerIds('regular-1')).toEqual(['customer-consignment']);
@@ -732,12 +598,9 @@ describe('DealerShipping ammo reconciliation', () => {
     expect((subject as any).getExplicitlySelectedCustomerAddress(californiaAddress)).toEqual(
       californiaAddress,
     );
-    expect(props.updateConsignment).toHaveBeenCalledWith({
-      id: 'customer-consignment',
-      lineItems: [
-        { itemId: 'gun-1', quantity: 1 },
-        { itemId: 'regular-1', quantity: 1 },
-      ],
+    expect(props.unassignItem).toHaveBeenCalledWith({
+      address: californiaAddress,
+      lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
     });
     expect(model.ownerIds('ammo-1')).toEqual([]);
   });
@@ -771,7 +634,12 @@ describe('DealerShipping ammo reconciliation', () => {
       californiaCustomerAddress,
     );
     expect((subject as any).getSelectedCustomerAddress()).toEqual(californiaCustomerAddress);
-    expect(props.setCustomerAddressSelection).toHaveBeenLastCalledWith(californiaCustomerAddress);
+    expect(props.confirmAmmoRoutingSession).toHaveBeenLastCalledWith({
+      cartId: 'cart-1',
+      confirmedCustomerAddress: californiaCustomerAddress,
+      customerIdentityKey: 'customer:4',
+      stateCode: 'CA',
+    });
     expect(subject.state.ammoRoutingError).toBe(false);
   });
 
@@ -878,6 +746,90 @@ describe('DealerShipping ammo reconciliation', () => {
     expect((subject as any).getCustomerDestinationAddress()).toBeUndefined();
   });
 
+  it('keeps BigCommerce countries available to the regular-item add-address modal', () => {
+    const { props, subject } = makeSubject(true, (nextProps) => {
+      nextProps.stateRestrictedConsignmentItems = [];
+      nextProps.cart.lineItems.physicalItems = [
+        { addedByPromotion: false, id: 'gun-1', parentId: null, quantity: 1 },
+        { addedByPromotion: false, id: 'regular-1', parentId: null, quantity: 1 },
+      ];
+    });
+
+    const previousLodashGlobal = (global as any)._;
+    let addressModals: any[] = [];
+
+    try {
+      (global as any)._ = { groupBy };
+      addressModals = findElementsByType(subject.render(), AddressFormModal);
+    } finally {
+      (global as any)._ = previousLodashGlobal;
+    }
+
+    expect(addressModals).not.toHaveLength(0);
+    expect(addressModals[0].props.countries).toBe(props.countries);
+  });
+
+  it('restores a confirmed guest mixed-cart address without unassigning any items', async () => {
+    const { props, subject } = makeSubject(true, (nextProps) => {
+      nextProps.fflConsignmentItems = [];
+      nextProps.cart.lineItems.physicalItems = [
+        { addedByPromotion: false, id: 'ammo-1', parentId: null, quantity: 2 },
+        { addedByPromotion: false, id: 'regular-1', parentId: null, quantity: 1 },
+      ];
+      nextProps.consignments = [
+        {
+          id: 'customer-consignment',
+          lineItemIds: ['ammo-1', 'regular-1'],
+          shippingAddress: customerAddress,
+        },
+      ];
+      nextProps.confirmedAmmoRoutingSession = {
+        cartId: 'cart-1',
+        confirmedCustomerAddress: customerAddress,
+        customerIdentityKey: 'guest:0',
+        stateCode: 'TX',
+      };
+    });
+    subject.state = { ...subject.state, selectedDealer: null };
+
+    await (subject as any).restoreConfirmedAmmoRoutingSession(props.confirmedAmmoRoutingSession);
+
+    expect(props.assignItem).not.toHaveBeenCalled();
+    expect(props.unassignItem).not.toHaveBeenCalled();
+    expect(subject.state.requiresAmmoRoutingReconciliation).toBe(false);
+    expect(subject.state.customerAddressSelection).toEqual(customerAddress);
+    expect(subject.state.customFirstNameInput).toBe('Jane');
+    expect(subject.state.customLastNameInput).toBe('Doe');
+    expect(subject.state.customAddressLine1Input).toBe('100 Customer Way');
+    expect(subject.state.customCityInput).toBe('Austin');
+    expect(subject.state.customPostCodeInput).toBe('78701');
+  });
+
+  it('blocks a restored standard route without a confirmed address and leaves routing untouched', async () => {
+    const { props, subject } = makeSubject(true, (nextProps) => {
+      nextProps.fflConsignmentItems = [];
+      nextProps.cart.lineItems.physicalItems = [
+        { addedByPromotion: false, id: 'ammo-1', parentId: null, quantity: 2 },
+        { addedByPromotion: false, id: 'regular-1', parentId: null, quantity: 1 },
+      ];
+      nextProps.confirmedAmmoRoutingSession = {
+        cartId: 'cart-1',
+        customerIdentityKey: 'guest:0',
+        stateCode: 'TX',
+      };
+    });
+    subject.state = { ...subject.state, selectedDealer: null };
+
+    await (subject as any).restoreConfirmedAmmoRoutingSession(props.confirmedAmmoRoutingSession);
+
+    expect(props.assignItem).not.toHaveBeenCalled();
+    expect(props.unassignItem).not.toHaveBeenCalled();
+    expect(subject.state.ammoSelectedState).toBe('TX');
+    expect(subject.state.ammoStateFFLRequired).toBe(false);
+    expect(subject.state.requiresAmmoRoutingReconciliation).toBe(true);
+    expect(props.onUnhandledError).not.toHaveBeenCalled();
+  });
+
   it('resets persisted dealer ammo by consignment ID while requiring a fresh selection', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       json: jest.fn().mockResolvedValue({
@@ -921,9 +873,6 @@ describe('DealerShipping ammo reconciliation', () => {
       nextProps.shippingAddress = californiaAddress;
     });
     const model = installStatefulConsignmentSdk(props);
-    props.unassignItem.mockRejectedValue(
-      new Error('No consignment found for the specified address'),
-    );
     subject.state = { ...subject.state, selectedDealer: null };
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -932,14 +881,14 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(subject.state.ammoSelectedState).toBe('');
     expect(subject.state.ammoStateFFLRequired).toBeNull();
     expect(props.unassignItem).not.toHaveBeenCalled();
-    expect(props.updateConsignment).not.toHaveBeenCalled();
+    expect(props.unassignItem).not.toHaveBeenCalled();
     expect(model.ownerIds('ammo-1')).toEqual(['dealer-consignment']);
 
     await (subject as any).handleSelectAddress(californiaAddress, 'regular-1', 'regular-1');
 
-    expect(props.updateConsignment).toHaveBeenCalledWith({
-      id: 'dealer-consignment',
-      lineItems: [{ itemId: 'gun-1', quantity: 1 }],
+    expect(props.unassignItem).toHaveBeenCalledWith({
+      address: committedDealerAddress,
+      lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
     });
     expect(props.onUnhandledError).not.toHaveBeenCalled();
     expect(subject.state.ammoRoutingError).toBe(false);
@@ -1124,8 +1073,7 @@ describe('DealerShipping ammo reconciliation', () => {
     };
     const model = installStatefulConsignmentSdk(props);
 
-    (subject as any).selectDealer(explicitDealer);
-    await (subject as any).pendingDealerCommit;
+    await (subject as any).selectDealer(explicitDealer);
 
     expect(props.assignItem).not.toHaveBeenCalled();
     expect(props.setSelectedFFL).toHaveBeenCalledWith(
@@ -1165,13 +1113,12 @@ describe('DealerShipping ammo reconciliation', () => {
     };
     const model = installStatefulConsignmentSdk(props);
 
-    (subject as any).selectDealer(explicitDealer);
-    await (subject as any).pendingDealerCommit;
+    await (subject as any).selectDealer(explicitDealer);
 
     expect(props.assignItem).toHaveBeenCalledTimes(1);
     expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL' }),
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
-      shippingAddress: expect.objectContaining({ fflID: 'ffl-123' }),
     });
     expect(model.ownerIds('gun-1')).toEqual(['dealer-consignment']);
     expect(model.ownerIds('ammo-1')).toEqual(['dealer-consignment']);
@@ -1203,8 +1150,8 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(subject.state.selectedDealer).toBe(dealerAddress);
     expect(props.assignItem).toHaveBeenCalledTimes(1);
     expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL' }),
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
-      shippingAddress: expect.objectContaining({ company: 'Example FFL' }),
     });
   });
 
@@ -1245,8 +1192,8 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(props.deleteConsignment).not.toHaveBeenCalled();
     expect(props.assignItem).toHaveBeenCalledTimes(1);
     expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL' }),
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
-      shippingAddress: expect.objectContaining({ company: 'Example FFL' }),
     });
     expect(model.ownerIds('gun-1')).toEqual(['dealer-consignment']);
     expect(model.ownerIds('ammo-1')).toEqual(['dealer-consignment']);
@@ -1289,11 +1236,11 @@ describe('DealerShipping ammo reconciliation', () => {
     await (subject as any).reconcileAmmoRouting('CA', californiaAddress);
 
     expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ firstName: 'Janet' }),
       lineItems: [
         { itemId: 'gun-1', quantity: 1 },
         { itemId: 'ammo-1', quantity: 2 },
       ],
-      shippingAddress: expect.objectContaining({ firstName: 'Janet' }),
     });
     expect(model.ownerIds('gun-1')).toHaveLength(1);
     expect(model.ownerIds('ammo-1')).toEqual(model.ownerIds('gun-1'));
@@ -1375,6 +1322,7 @@ describe('DealerShipping ammo reconciliation', () => {
       ...subject.state,
       ammoSelectedState: 'CA',
       ammoStateFFLRequired: true,
+      customAddressLine1Input: 'dealer-flow-local-value',
     };
     const model = installStatefulConsignmentSdk(props);
 
@@ -1389,6 +1337,7 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(model.ownerIds('gun-1')).toEqual(['dealer-consignment']);
     expect(model.ownerIds('ammo-1')).toEqual(['customer-consignment']);
     expect(model.ownerIds('regular-1')).toEqual(['customer-consignment']);
+    expect(subject.state.customAddressLine1Input).toBe('dealer-flow-local-value');
   });
 
   it('keeps the ship non-gun items to FFL override without assigning promotion-added items', async () => {
@@ -1426,11 +1375,11 @@ describe('DealerShipping ammo reconciliation', () => {
 
     expect(props.assignItem).toHaveBeenCalledTimes(1);
     expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL' }),
       lineItems: [
         { itemId: 'ammo-1', quantity: 2 },
         { itemId: 'regular-1', quantity: 1 },
       ],
-      shippingAddress: expect.objectContaining({ company: 'Example FFL' }),
     });
     expect(model.ownerIds('gun-1')).toEqual(['dealer-consignment']);
     expect(model.ownerIds('ammo-1')).toEqual(['dealer-consignment']);
@@ -1468,6 +1417,51 @@ describe('DealerShipping ammo reconciliation', () => {
     });
   });
 
+  it('retains an ammo-only dealer when a newer restricted state supersedes direct shipping', async () => {
+    let releaseFirstAssignment: () => void = () => undefined;
+    let markFirstAssignmentStarted: () => void = () => undefined;
+    const firstAssignmentStarted = new Promise<void>((resolve) => {
+      markFirstAssignmentStarted = resolve;
+    });
+    const { props, subject } = makeAmmoOnlySubject();
+    props.cart.id = 'ammo-only-overlap-cart';
+    subject.state = { ...subject.state, selectedDealer: dealerAddress };
+    props.consignments = [
+      {
+        id: 'dealer-consignment',
+        lineItemIds: ['ammo-1'],
+        shippingAddress: committedDealerAddress,
+      },
+    ];
+    installStatefulConsignmentSdk(props, async (call) => {
+      if (call === 1) {
+        markFirstAssignmentStarted();
+        await new Promise<void>((resolve) => {
+          releaseFirstAssignment = resolve;
+        });
+      }
+    });
+
+    const directShipping = (subject as any).reconcileAmmoRouting('TX', customerAddress);
+    await firstAssignmentStarted;
+
+    const restrictedShipping = (subject as any).reconcileAmmoRouting(
+      'CA',
+      californiaCustomerAddress,
+    );
+    releaseFirstAssignment();
+    await Promise.all([directShipping, restrictedShipping]);
+
+    expect(subject.state.ammoSelectedState).toBe('CA');
+    expect(subject.state.ammoStateFFLRequired).toBe(true);
+    expect(subject.state.selectedDealer).toBe(dealerAddress);
+    expect(props.setSelectedFFL).not.toHaveBeenCalledWith(null);
+    expect(
+      props.consignments.find(({ lineItemIds }) => lineItemIds.includes('ammo-1'))?.shippingAddress
+        .company,
+    ).toBe('Example FFL');
+  });
+
   it('honors only the newest state when address changes overlap', async () => {
     const { props, subject } = makeSubject();
     let releaseFirstAssignment: () => void = () => undefined;
@@ -1499,8 +1493,8 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(subject.state.ammoStateFFLRequired).toBe(false);
     expect(props.assignItem).toHaveBeenCalledTimes(2);
     expect(props.assignItem).toHaveBeenNthCalledWith(1, {
+      address: expect.objectContaining({ company: 'Example FFL' }),
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
-      shippingAddress: expect.objectContaining({ company: 'Example FFL' }),
     });
     expect(props.assignItem).toHaveBeenNthCalledWith(2, {
       address: customerAddress,
@@ -1509,6 +1503,10 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(model.ownerIds('gun-1')).toEqual(['dealer-consignment']);
     expect(model.ownerIds('ammo-1')).toHaveLength(1);
     expect(model.ownerIds('ammo-1')).not.toContain('dealer-consignment');
+    expect(props.confirmAmmoRoutingSession).toHaveBeenCalledTimes(1);
+    expect(props.confirmAmmoRoutingSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({ stateCode: 'TX' }),
+    );
   });
 
   it('does not let an obsolete routing failure block the newest state', async () => {
@@ -1570,8 +1568,8 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(subject.state.requiresAmmoRoutingReconciliation).toBe(true);
     expect(props.assignItem).toHaveBeenCalledTimes(1);
     expect(props.assignItem).toHaveBeenCalledWith({
+      address: expect.objectContaining({ company: 'Example FFL' }),
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
-      shippingAddress: expect.objectContaining({ company: 'Example FFL' }),
     });
     expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
   });
@@ -1589,13 +1587,117 @@ describe('DealerShipping ammo reconciliation', () => {
       selectedDealer: null,
     };
     props.consignments = [];
-    props.assignItem.mockRejectedValueOnce(new Error('assign failed')).mockResolvedValueOnce({});
+    props.assignItem.mockRejectedValueOnce(new Error('assign failed'));
 
     await (subject as any).assignCustomerItemsToAddress(customerAddress);
     expect(subject.state.ammoRoutingError).toBe(true);
 
     await (subject as any).assignCustomerItemsToAddress(customerAddress);
     expect(subject.state.ammoRoutingError).toBe(false);
+  });
+
+  it('accepts BigCommerce normalization for a guest ammo-only shipping address', async () => {
+    const { props, subject } = makeSubject(true);
+    props.fflConsignmentItems = [];
+    props.cart.lineItems.physicalItems = [
+      { addedByPromotion: false, id: 'ammo-1', parentId: null, quantity: 2 },
+    ];
+    props.consignments = [];
+    subject.state = {
+      ...subject.state,
+      ammoSelectedState: 'TX',
+      ammoStateFFLRequired: false,
+      customAddressLine1Input: '100 Customer Way',
+      customAddressLine2Input: '',
+      customCityInput: 'Austin',
+      customCompanyInput: '',
+      customFirstNameInput: 'Jane',
+      customLastNameInput: 'Doe',
+      customPhoneInput: '5555550100',
+      customPostCodeInput: '78701',
+      selectedDealer: null,
+    };
+    props.assignItem.mockImplementation(async ({ address, lineItems }) => {
+      const normalizedAddress = { ...address, country: 'United States' };
+      delete normalizedAddress.customFields;
+      props.consignments = [
+        {
+          id: 'customer-consignment',
+          lineItemIds: lineItems.map((lineItem: { itemId: string }) => lineItem.itemId),
+          shippingAddress: normalizedAddress,
+        },
+      ];
+
+      return makeCheckoutSelectors(props);
+    });
+
+    (subject as any).debouncedAssignCustomShippingAddress();
+    await (subject as any).debouncedAssignCustomShippingAddress.flush();
+
+    expect(props.assignItem).toHaveBeenCalledWith({
+      address: {
+        address1: '100 Customer Way',
+        address2: '',
+        city: 'Austin',
+        company: '',
+        countryCode: 'US',
+        customFields: [],
+        firstName: 'Jane',
+        lastName: 'Doe',
+        phone: '5555550100',
+        postalCode: '78701',
+        shouldSaveAddress: false,
+        stateOrProvince: 'Texas',
+        stateOrProvinceCode: 'TX',
+      },
+      lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
+    });
+    expect(subject.state.ammoRoutingError).toBe(false);
+    expect(props.onUnhandledError).not.toHaveBeenCalled();
+    expect(props.confirmAmmoRoutingSession).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        cartId: 'cart-1',
+        confirmedCustomerAddress: expect.objectContaining({
+          address1: '100 Customer Way',
+          stateOrProvince: 'Texas',
+          stateOrProvinceCode: 'TX',
+        }),
+        customerIdentityKey: 'guest:0',
+        stateCode: 'TX',
+      }),
+    );
+
+    (subject as any).debouncedAssignCustomShippingAddress();
+    await (subject as any).debouncedAssignCustomShippingAddress.flush();
+
+    expect(props.assignItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a returned customer-item consignment at a different destination', async () => {
+    const { props, subject } = makeSubject(true);
+    props.fflConsignmentItems = [];
+    props.cart.lineItems.physicalItems = [
+      { addedByPromotion: false, id: 'ammo-1', parentId: null, quantity: 2 },
+    ];
+    props.consignments = [];
+    props.assignItem.mockImplementation(async () => {
+      props.consignments = [
+        {
+          id: 'customer-consignment',
+          lineItemIds: ['ammo-1'],
+          shippingAddress: californiaCustomerAddress,
+        },
+      ];
+
+      return makeCheckoutSelectors(props);
+    });
+
+    await expect((subject as any).assignCustomerItemsToAddress(customerAddress)).resolves.toBe(
+      false,
+    );
+
+    expect(subject.state.ammoRoutingError).toBe(true);
+    expect(props.onUnhandledError).toHaveBeenCalledTimes(1);
   });
 
   it('assigns a new guest address without deleting the dealer or saving an account address', async () => {
@@ -1675,13 +1777,13 @@ describe('DealerShipping ammo reconciliation', () => {
 
       expect(props.deleteConsignment).not.toHaveBeenCalled();
       expect(props.assignItem).toHaveBeenNthCalledWith(1, {
+        address: expect.objectContaining({ company: 'Example FFL' }),
         lineItems: isGuest
           ? [
               { itemId: 'gun-1', quantity: 1 },
               { itemId: 'ammo-1', quantity: 2 },
             ]
           : [{ itemId: 'ammo-1', quantity: 2 }],
-        shippingAddress: expect.objectContaining({ company: 'Example FFL' }),
       });
       expect(props.assignItem).toHaveBeenNthCalledWith(2, {
         address: expect.objectContaining({ stateOrProvinceCode: 'CA' }),
@@ -1757,7 +1859,7 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(subject.state.isUpdatingShippingData).toBe(false);
   });
 
-  it('does not show the notice when ammo was already assigned to the FFL before address submission', async () => {
+  it('does not mutate a restricted mixed cart until its customer address is available', async () => {
     const { props, subject } = makeSubject(true);
     const californiaAddress = {
       ...customerAddress,
@@ -1782,7 +1884,8 @@ describe('DealerShipping ammo reconciliation', () => {
 
     expect(subject.state.ammoStateFFLRequired).toBe(true);
     expect(subject.state.showAmmoFflNotice).toBe(false);
-    expect(model.ownerIds('ammo-1')).toHaveLength(1);
+    expect(subject.state.requiresAmmoRoutingReconciliation).toBe(true);
+    expect(model.ownerIds('ammo-1')).toHaveLength(0);
     expect(model.ownerIds('regular-1')).toHaveLength(0);
 
     await (subject as any).handleSaveAddress({
@@ -1791,10 +1894,68 @@ describe('DealerShipping ammo reconciliation', () => {
       shouldSaveAddress: true,
     });
 
-    expect(subject.state.showAmmoFflNotice).toBe(false);
+    expect(subject.state.showAmmoFflNotice).toBe(true);
     expect(model.ownerIds('ammo-1')).toHaveLength(1);
     expect(model.ownerIds('regular-1')).toHaveLength(1);
     expect(model.ownerIds('ammo-1')).not.toEqual(model.ownerIds('regular-1'));
+    expect(subject.state.customAddressLine1Input).toBe('');
+  });
+
+  it('prefills the guest direct-shipping form after a new address makes an ammo cart unrestricted', async () => {
+    const { props, subject } = makeSubject(true);
+    const texasAddress = {
+      ...customerAddress,
+      address2: 'Suite 200',
+      company: 'Customer Company',
+      phone: '5555550199',
+    };
+    props.fflConsignmentItems = [];
+    props.cart.lineItems.physicalItems = [
+      { addedByPromotion: false, id: 'ammo-1', parentId: null, quantity: 2 },
+      { addedByPromotion: false, id: 'regular-1', parentId: null, quantity: 1 },
+    ];
+    props.consignments = [
+      {
+        id: 'dealer-consignment',
+        lineItemIds: ['ammo-1'],
+        shippingAddress: committedDealerAddress,
+      },
+    ];
+    subject.state = {
+      ...subject.state,
+      ammoSelectedState: 'CA',
+      ammoStateFFLRequired: true,
+      customAddressLine1Input: '',
+      customAddressLine2Input: '',
+      customCityInput: '',
+      customCompanyInput: '',
+      customPhoneInput: '',
+      customPostCodeInput: '',
+      itemAddingAddress: { itemId: 'regular-1', key: 'regular-1' },
+    };
+    const model = installStatefulConsignmentSdk(props);
+
+    await (subject as any).handleSaveAddress({
+      ...texasAddress,
+      customFields: {},
+      shouldSaveAddress: true,
+    });
+
+    expect(subject.state.ammoStateFFLRequired).toBe(false);
+    expect(subject.state.customFirstNameInput).toBe('Jane');
+    expect(subject.state.customLastNameInput).toBe('Doe');
+    expect(subject.state.customCompanyInput).toBe('Customer Company');
+    expect(subject.state.customPhoneInput).toBe('5555550199');
+    expect(subject.state.customAddressLine1Input).toBe('100 Customer Way');
+    expect(subject.state.customAddressLine2Input).toBe('Suite 200');
+    expect(subject.state.customCityInput).toBe('Austin');
+    expect(subject.state.customPostCodeInput).toBe('78701');
+    expect(subject.state.customerAddressSelection).toEqual(
+      expect.objectContaining({ address1: '100 Customer Way', stateOrProvinceCode: 'TX' }),
+    );
+    expect(model.ownerIds('ammo-1')).toEqual(model.ownerIds('regular-1'));
+    expect(props.assignItem).toHaveBeenCalledTimes(1);
+    expect(props.createCustomerAddress).not.toHaveBeenCalled();
   });
 
   it('shows the notice when submitted address still needs ammo assigned to an FFL', async () => {

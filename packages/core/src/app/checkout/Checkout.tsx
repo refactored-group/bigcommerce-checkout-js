@@ -6,6 +6,7 @@ import {
     CheckoutParams,
     CheckoutSelectors,
     Consignment,
+    ConsignmentAssignmentRequestBody,
     EmbeddedCheckoutMessenger,
     EmbeddedCheckoutMessengerOptions,
     ExtensionRegion,
@@ -56,6 +57,11 @@ import mapToCheckoutProps from './mapToCheckoutProps';
 import navigateToOrderConfirmation from './navigateToOrderConfirmation';
 import withCheckout from './withCheckout';
 import DealerShipping from './dealer/DealerShipping';
+import {
+    createFflConsignmentCoordinator,
+    FflConsignmentCoordinator,
+} from './dealer/fflConsignmentCoordinator';
+import { ConfirmedAmmoRoutingSession } from './dealer/utils';
 
 const Billing = lazy(() =>
     retry(
@@ -136,25 +142,6 @@ export const shouldResetGuestFflShipping = (
     consignments: Consignment[] = [],
 ): boolean => Boolean(customer?.isGuest && hasFflRelatedItems && consignments.length > 0);
 
-export const deleteConsignmentsSequentially = async (
-    consignments: Consignment[],
-    deleteConsignment: (id: string) => Promise<CheckoutSelectors>,
-): Promise<CheckoutSelectors | undefined> => {
-    let currentState: CheckoutSelectors | undefined;
-
-    for (const { id } of consignments) {
-        try {
-            currentState = await deleteConsignment(id);
-        } catch (error) {
-            if ((error as { status?: number })?.status !== 404) {
-                throw error;
-            }
-        }
-    }
-
-    return currentState;
-};
-
 export interface CheckoutProps {
     checkoutId: string;
     containerId: string;
@@ -183,6 +170,7 @@ export interface CheckoutState {
     requiresFreshFflSelection: boolean;
     withAmmoSubscription: boolean;
     buttonConfigs: PaymentMethod[];
+    confirmedAmmoRoutingSession?: ConfirmedAmmoRoutingSession;
     customerAddressSelection?: Address;
     hasFflRelatedItems: boolean;
     isResolvingFflShipping: boolean;
@@ -210,9 +198,16 @@ export interface WithCheckoutProps {
     loadPaymentMethodByIds(methodIds: string[]): Promise<CheckoutSelectors>;
     subscribeToConsignments(subscriber: (state: CheckoutSelectors) => void): () => void;
     subscribeToLogin(subscriber: (state: CheckoutSelectors) => void): () => void;
+    assignItemsToAddress(
+        consignment: ConsignmentAssignmentRequestBody,
+    ): Promise<CheckoutSelectors>;
     loadShippingAddressFields(): Promise<CheckoutSelectors>;
     loadShippingOptions(): Promise<CheckoutSelectors>;
     deleteConsignment(id: string): Promise<CheckoutSelectors>;
+    getCheckoutState(): CheckoutSelectors;
+    unassignItemsToAddress(
+        consignment: ConsignmentAssignmentRequestBody,
+    ): Promise<CheckoutSelectors>;
 }
 
 export class Checkout extends Component<
@@ -241,6 +236,7 @@ export class Checkout extends Component<
         hasSelectedShippingOptions: false,
         isSubscribed: false,
         buttonConfigs: [],
+        confirmedAmmoRoutingSession: undefined,
         customerAddressSelection: undefined,
         hasFflRelatedItems: false,
         isResolvingFflShipping: true,
@@ -252,6 +248,13 @@ export class Checkout extends Component<
     private customerIdentityKey = 'customer:none';
     private customerIdentityResetKey?: string;
     private customerIdentityResetPromise: Promise<void> = Promise.resolve();
+    private fflConsignmentCoordinator: FflConsignmentCoordinator =
+        createFflConsignmentCoordinator({
+            assignItemsToAddress: this.props.assignItemsToAddress,
+            deleteConsignment: this.props.deleteConsignment,
+            getState: this.props.getCheckoutState,
+            unassignItemsToAddress: this.props.unassignItemsToAddress,
+        });
     private isFflRelatedCart = false;
 
     componentWillUnmount(): void {
@@ -265,6 +268,7 @@ export class Checkout extends Component<
         }
 
         window.removeEventListener('beforeunload', this.handleBeforeExit);
+        this.fflConsignmentCoordinator.dispose();
         this.handleBeforeExit();
     }
 
@@ -281,40 +285,28 @@ export class Checkout extends Component<
         initialState: CheckoutSelectors,
     ): Promise<CheckoutSelectors> => {
         const {
-            checkoutId,
-            deleteConsignment,
-            loadCheckout,
             loadShippingAddressFields,
             loadShippingOptions,
         } = this.props;
-        let currentState = initialState;
+        const cart = initialState.data.getCart();
 
-        // A late DealerShipping mutation can finish during sign-out. Re-read
-        // after each pass so it cannot silently restore a previous customer's
-        // destination after the first deletion snapshot was taken.
-        for (let pass = 0; pass < 3; pass += 1) {
-            const consignments = currentState.data.getConsignments() || [];
-
-            if (consignments.length === 0) {
-                break;
-            }
-
-            currentState =
-                (await deleteConsignmentsSequentially(consignments, deleteConsignment)) ||
-                currentState;
-
-            currentState = await loadCheckout(checkoutId, this.getCheckoutLoadOptions());
+        if (!cart) {
+            throw new Error('Automatic FFL could not resolve the active cart');
         }
 
-        currentState = await loadCheckout(checkoutId, this.getCheckoutLoadOptions());
+        // Customer identity cleanup shares the same queue as every DealerShipping
+        // mutation, so it sees and clears the result of any in-flight assignment.
+        const result = await this.fflConsignmentCoordinator.clearAll(cart.id);
 
-        if ((currentState.data.getConsignments() || []).length > 0) {
-            throw new Error('Automatic FFL could not clear the previous shipping destination');
+        if (result.status !== 'fulfilled') {
+            throw result.status === 'failed'
+                ? result.error
+                : new Error('Automatic FFL shipping cleanup was superseded');
         }
 
         await Promise.all([loadShippingAddressFields(), loadShippingOptions()]);
 
-        return currentState;
+        return result.checkoutState;
     };
 
     private queueCustomerIdentityReset = (
@@ -331,10 +323,8 @@ export class Checkout extends Component<
 
         this.customerIdentityResetKey = identityKey;
         this.setState({
-            customerAddressSelection: undefined,
             isResolvingFflShipping: true,
             requiresFreshFflSelection: true,
-            selectedFFL: null,
         });
 
         this.customerIdentityResetPromise = this.customerIdentityResetPromise
@@ -343,7 +333,12 @@ export class Checkout extends Component<
                 await this.resetFflShippingState(checkoutState);
 
                 if (this.customerIdentityKey === identityKey) {
-                    this.setState({ isResolvingFflShipping: false });
+                    this.setState({
+                        confirmedAmmoRoutingSession: undefined,
+                        customerAddressSelection: undefined,
+                        isResolvingFflShipping: false,
+                        selectedFFL: null,
+                    });
                 }
             })
             .catch((error) => {
@@ -754,7 +749,9 @@ export class Checkout extends Component<
                   <LazyContainer>
                     <DealerShipping
                         cartHasChanged={ hasCartChanged }
+                        confirmedAmmoRoutingSession={ this.state.confirmedAmmoRoutingSession }
                         customerAddressSelection={ this.state.customerAddressSelection }
+                        fflConsignmentCoordinator={ this.fflConsignmentCoordinator }
                         fflProducts={ this.state.fflProducts }
                         fflConsignmentItems={ fflConsignmentItems }
                         isMultiShippingMode={ true }
@@ -766,6 +763,8 @@ export class Checkout extends Component<
                         stateRestrictedConsignmentItems={ stateRestrictedConsignmentItems }
                         storeHash={ this.state.storeHash }
                         selectedFFL={ this.state.selectedFFL }
+                        clearConfirmedAmmoRoutingSession={ this.clearConfirmedAmmoRoutingSession }
+                        confirmAmmoRoutingSession={ this.confirmAmmoRoutingSession }
                         setSelectedFFL={ this.setSelectedFFL }
                         setCustomerAddressSelection={ this.setCustomerAddressSelection }
                         setFFLtoOrderComments={ this.setFFLtoOrderComments }
@@ -1124,6 +1123,31 @@ export class Checkout extends Component<
 
     private setCustomerAddressSelection = (customerAddressSelection?: Address): void => {
         this.setState({ customerAddressSelection });
+    };
+
+    private confirmAmmoRoutingSession = (
+        confirmedAmmoRoutingSession: ConfirmedAmmoRoutingSession,
+    ): void => {
+        const cartId = this.props.getCheckoutState()?.data?.getCart?.()?.id;
+
+        if (
+            confirmedAmmoRoutingSession.cartId !== cartId ||
+            confirmedAmmoRoutingSession.customerIdentityKey !== this.customerIdentityKey
+        ) {
+            return;
+        }
+
+        this.setState({
+            confirmedAmmoRoutingSession,
+            customerAddressSelection: confirmedAmmoRoutingSession.confirmedCustomerAddress,
+        });
+    };
+
+    private clearConfirmedAmmoRoutingSession = (): void => {
+        this.setState({
+            confirmedAmmoRoutingSession: undefined,
+            customerAddressSelection: undefined,
+        });
     };
 
     private setFFLtoOrderComments: () => void = (value) => {

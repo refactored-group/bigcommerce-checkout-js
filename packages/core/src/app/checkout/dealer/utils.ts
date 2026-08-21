@@ -1,3 +1,5 @@
+import { Address } from '@bigcommerce/checkout-sdk';
+
 import { DealerData, DealerSelectionData } from './types';
 import formatPhoneNumber from './PhoneNumberFormatter';
 
@@ -71,11 +73,11 @@ interface ResolveAmmoRoutingOptions {
   withAmmoSubscription: boolean;
 }
 
-export interface AmmoCheckoutSessionState {
-  ammoSelectedState: string;
-  ammoStateFFLRequired: boolean;
+export interface ConfirmedAmmoRoutingSession {
   cartId: string;
+  confirmedCustomerAddress?: Address;
   customerIdentityKey: string;
+  stateCode: string;
 }
 
 interface ShouldDisableFflShippingSubmitOptions {
@@ -85,6 +87,7 @@ interface ShouldDisableFflShippingSubmitOptions {
   isAmmoStateSelectionPending: boolean;
   isLoading: boolean;
   isUpdatingShippingData: boolean;
+  requiresAmmoRoutingReconciliation: boolean;
 }
 
 interface ShouldShowAmmoAddressSelectorOptions {
@@ -167,14 +170,14 @@ export const resolveAmmoRouting = ({
   return isAmmoFflRequiredState(normalizedStateCode, fflProducts) ? 'ffl' : 'standard';
 };
 
-export const resolveAmmoCheckoutSessionState = (
+export const resolveConfirmedAmmoRoutingSession = (
   cartId: string,
   customerIdentityKey: string,
-  sessionState: AmmoCheckoutSessionState | null,
-): AmmoCheckoutSessionState | null =>
+  sessionState?: ConfirmedAmmoRoutingSession,
+): ConfirmedAmmoRoutingSession | undefined =>
   sessionState?.cartId === cartId && sessionState.customerIdentityKey === customerIdentityKey
     ? sessionState
-    : null;
+    : undefined;
 
 export const shouldDisableFflShippingSubmit = ({
   hasAmmoRoutingError,
@@ -183,10 +186,12 @@ export const shouldDisableFflShippingSubmit = ({
   isAmmoStateSelectionPending,
   isLoading,
   isUpdatingShippingData,
+  requiresAmmoRoutingReconciliation,
 }: ShouldDisableFflShippingSubmitOptions): boolean =>
   isLoading ||
   isUpdatingShippingData ||
   hasAmmoRoutingError ||
+  requiresAmmoRoutingReconciliation ||
   isAmmoStateSelectionPending ||
   hasUnassignedLineItems ||
   !hasSelectedShippingOptions;

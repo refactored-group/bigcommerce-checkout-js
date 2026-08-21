@@ -4,7 +4,7 @@ import {
   formatDealerForSelection,
   isAmmunitionOnlyCart,
   isAmmoFflRequiredState,
-  resolveAmmoCheckoutSessionState,
+  resolveConfirmedAmmoRoutingSession,
   resolveAmmoRouting,
   resolveFflRecipientName,
   shouldDisableFflShippingSubmit,
@@ -103,26 +103,27 @@ describe('resolveAmmoRouting', () => {
   });
 });
 
-describe('resolveAmmoCheckoutSessionState', () => {
+describe('resolveConfirmedAmmoRoutingSession', () => {
   const sessionState = {
-    ammoSelectedState: 'CA',
-    ammoStateFFLRequired: true,
     cartId: 'cart-1',
     customerIdentityKey: 'customer:4',
+    stateCode: 'CA',
   };
 
   it('restores state while the same checkout page moves between steps', () => {
-    expect(resolveAmmoCheckoutSessionState('cart-1', 'customer:4', sessionState)).toEqual(
+    expect(resolveConfirmedAmmoRoutingSession('cart-1', 'customer:4', sessionState)).toEqual(
       sessionState,
     );
   });
 
   it('does not carry state into a different cart', () => {
-    expect(resolveAmmoCheckoutSessionState('cart-2', 'customer:4', sessionState)).toBeNull();
+    expect(
+      resolveConfirmedAmmoRoutingSession('cart-2', 'customer:4', sessionState),
+    ).toBeUndefined();
   });
 
   it('does not carry signed-in routing state into a guest checkout', () => {
-    expect(resolveAmmoCheckoutSessionState('cart-1', 'guest:0', sessionState)).toBeNull();
+    expect(resolveConfirmedAmmoRoutingSession('cart-1', 'guest:0', sessionState)).toBeUndefined();
   });
 });
 
@@ -136,6 +137,7 @@ describe('shouldDisableFflShippingSubmit', () => {
         isAmmoStateSelectionPending: false,
         isLoading: false,
         isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: false,
       }),
     ).toBe(true);
   });
@@ -149,6 +151,7 @@ describe('shouldDisableFflShippingSubmit', () => {
         isAmmoStateSelectionPending: false,
         isLoading: false,
         isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: false,
       }),
     ).toBe(false);
   });
@@ -162,6 +165,7 @@ describe('shouldDisableFflShippingSubmit', () => {
         isAmmoStateSelectionPending: false,
         isLoading: true,
         isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: false,
       }),
     ).toBe(true);
   });
@@ -175,6 +179,7 @@ describe('shouldDisableFflShippingSubmit', () => {
         isAmmoStateSelectionPending: true,
         isLoading: false,
         isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: false,
       }),
     ).toBe(true);
   });
@@ -188,6 +193,21 @@ describe('shouldDisableFflShippingSubmit', () => {
         isAmmoStateSelectionPending: false,
         isLoading: false,
         isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('blocks checkout while a confirmed route still needs a customer address', () => {
+    expect(
+      shouldDisableFflShippingSubmit({
+        hasAmmoRoutingError: false,
+        hasSelectedShippingOptions: true,
+        hasUnassignedLineItems: false,
+        isAmmoStateSelectionPending: false,
+        isLoading: false,
+        isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: true,
       }),
     ).toBe(true);
   });

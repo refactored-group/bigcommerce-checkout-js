@@ -7,18 +7,15 @@ import {
   CheckoutStoreSelector,
   CheckoutSelectors,
   Consignment,
-  ConsignmentAssignmentRequestBody,
-  ConsignmentUpdateRequestBody,
   Country,
   Customer,
   CustomerRequestOptions,
   FormField,
   ShippingInitializeOptions,
   ShippingRequestOptions,
-  RequestOptions,
 } from '@bigcommerce/checkout-sdk';
 import React, { lazy, useEffect } from 'react';
-import { debounce, identity, isEqual, noop, pickBy } from 'lodash';
+import { debounce, noop } from 'lodash';
 
 import { withCheckout, CheckoutContextProps } from '../../checkout';
 import getShippingMethodId from '../../shipping/getShippingMethodId';
@@ -42,7 +39,6 @@ import {
   AddressFormModal,
   AddressFormValues,
 } from '../../address';
-import { isRequestError } from '../../common/error';
 import { retry, EMPTY_ARRAY } from '../../common/utility';
 import { Form } from '../../ui/form';
 
@@ -50,11 +46,16 @@ import getShippableLineItems from './getShippableLineItems';
 import CountryDropdown from './CountryDropdown';
 import CustomerNameFields from './CustomerNameFields';
 import {
+  FflConsignmentCoordinator,
+  FflCoordinatorResult,
+  isSameConsignmentDestination,
+} from './fflConsignmentCoordinator';
+import {
   AmmoRoutingDecision,
-  AmmoCheckoutSessionState,
+  ConfirmedAmmoRoutingSession,
   canCommitDealerConsignment,
   isAmmunitionOnlyCart,
-  resolveAmmoCheckoutSessionState,
+  resolveConfirmedAmmoRoutingSession,
   resolveAmmoRouting,
   resolveFflRecipientName,
   shouldDisableFflShippingSubmit,
@@ -75,47 +76,6 @@ const SDK_FIELD_TO_STATE_KEY: Record<string, string> = {
   postalCode: 'customPostCodeInput',
 };
 
-const normalizeSdkAddress = (address: Partial<Address>) =>
-  pickBy(
-    {
-      firstName: address.firstName,
-      lastName: address.lastName,
-      company: address.company,
-      address1: address.address1,
-      address2: address.address2,
-      city: address.city,
-      stateOrProvince: address.stateOrProvince,
-      countryCode: address.countryCode,
-      postalCode: address.postalCode,
-      phone: address.phone,
-      customFields: address.customFields,
-    },
-    identity,
-  );
-
-const isSdkEqualAddress = (addressA?: Partial<Address>, addressB?: Partial<Address>): boolean =>
-  Boolean(
-    addressA && addressB && isEqual(normalizeSdkAddress(addressA), normalizeSdkAddress(addressB)),
-  );
-
-const isSameConsignmentDestination = (
-  addressA?: Partial<Address>,
-  addressB?: Partial<Address>,
-): boolean => {
-  if (!addressA || !addressB) {
-    return false;
-  }
-
-  const { stateOrProvince: _stateA, ...normalizedAddressA } = normalizeSdkAddress(addressA);
-  const { stateOrProvince: _stateB, ...normalizedAddressB } = normalizeSdkAddress(addressB);
-  const hasStateCodes = Boolean(addressA.stateOrProvinceCode && addressB.stateOrProvinceCode);
-  const isSameState = hasStateCodes
-    ? addressA.stateOrProvinceCode === addressB.stateOrProvinceCode
-    : addressA.stateOrProvince === addressB.stateOrProvince;
-
-  return isSameState && isEqual(normalizedAddressA, normalizedAddressB);
-};
-
 const getCustomerIdentityKey = (customer: Customer): string =>
   `${customer.isGuest ? 'guest' : 'customer'}:${customer.id}`;
 
@@ -128,13 +88,6 @@ const Shipping = lazy(() =>
       ),
   ),
 );
-
-// CheckoutStep unmounts Shipping while Billing is active. Keep the buyer's ammo
-// state choice for that page lifetime only; a full checkout reload evaluates the
-// destination again instead of inheriting a persisted BigCommerce consignment.
-let ammoCheckoutSessionState: AmmoCheckoutSessionState | null = null;
-
-type UnassignLineItemsResult = 'success' | 'delete-not-found' | 'failure';
 
 const ItemFFL = lazy(() =>
   retry(
@@ -208,22 +161,17 @@ export interface WithCheckoutShippingProps {
   shouldShowAddAddressInCheckout: boolean;
   shouldShowMultiShipping: boolean;
   shouldShowOrderComments: boolean;
-  assignItem(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
   deinitializeShippingMethod(options: ShippingRequestOptions): Promise<CheckoutSelectors>;
-  deleteConsignment(consignmentId: string, options?: RequestOptions): Promise<CheckoutSelectors>;
-  updateConsignment(
-    consignment: ConsignmentUpdateRequestBody,
-    options?: RequestOptions,
-  ): Promise<CheckoutSelectors>;
   getFields(countryCode?: string): FormField[];
   getBillingFields(countryCode?: string): FormField[];
   initializeShippingMethod(options: ShippingInitializeOptions): Promise<CheckoutSelectors>;
+  loadShippingAddressFields(): Promise<CheckoutSelectors>;
+  loadBillingAddressFields(): Promise<CheckoutSelectors>;
+  loadShippingOptions(): Promise<CheckoutSelectors>;
   signOut(options?: CustomerRequestOptions): void;
-  unassignItem(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
   updateBillingAddress(address: Partial<Address>): Promise<CheckoutSelectors>;
   createCustomerAddress(address: AddressRequestBody): Promise<CheckoutSelectors>;
-  getCurrentConsignments(): Consignment[] | undefined;
-  reloadCheckout(): Promise<CheckoutSelectors>;
+  getCheckoutState(): CheckoutSelectors;
   updateCheckout(payload: CheckoutRequestBody): Promise<CheckoutSelectors>;
   updateShippingAddress(address: Partial<Address>): Promise<CheckoutSelectors>;
 }
@@ -245,6 +193,10 @@ interface DealerProps {
   customerMessage: string;
   storeHash: string;
   customerAddressSelection?: Address;
+  confirmedAmmoRoutingSession?: ConfirmedAmmoRoutingSession;
+  fflConsignmentCoordinator: FflConsignmentCoordinator;
+  clearConfirmedAmmoRoutingSession(): void;
+  confirmAmmoRoutingSession(session: ConfirmedAmmoRoutingSession): void;
   setCustomerAddressSelection(address?: Address): void;
 }
 
@@ -335,12 +287,7 @@ export class DealerShipping extends React.PureComponent<
   }
 
   private debouncedAssignAddress: any;
-  private ammoRoutingQueue: Promise<boolean> = Promise.resolve(true);
-  private ammoRoutingRevision = 0;
-  private ammoRoutingConsignments: Consignment[] | null = null;
-  private isAmmoRoutingInFlight = false;
   private isUnmounted = false;
-  private pendingDealerCommit: Promise<boolean> | null = null;
 
   constructor(props: any) {
     super(props);
@@ -355,18 +302,18 @@ export class DealerShipping extends React.PureComponent<
     const initialLastName = props.customer?.isGuest
       ? currentPageAddress?.lastName || ''
       : props.billingAddress?.lastName || props.customer?.lastName || '';
-    const restoredAmmoState = resolveAmmoCheckoutSessionState(
+    const restoredAmmoState = resolveConfirmedAmmoRoutingSession(
       props.cart.id,
       getCustomerIdentityKey(props.customer),
-      ammoCheckoutSessionState,
+      props.confirmedAmmoRoutingSession,
     );
 
     this.state = {
       applyAmmoStateRulesInMixedCarts: false,
       ammoRoutingError: false,
       requiresAmmoRoutingReconciliation: false,
-      ammoSelectedState: restoredAmmoState?.ammoSelectedState ?? '',
-      ammoStateFFLRequired: restoredAmmoState?.ammoStateFFLRequired ?? null,
+      ammoSelectedState: restoredAmmoState?.stateCode ?? '',
+      ammoStateFFLRequired: null,
       ammoFflNoticeState: '',
       announcement: '',
       createCustomerAddressError: null,
@@ -407,7 +354,13 @@ export class DealerShipping extends React.PureComponent<
     };
 
     this.debouncedAssignCustomShippingAddress = debounce(async () => {
-      const address = {
+      const stateOrProvinceCode = this.state.ammoSelectedState;
+      const stateOrProvince =
+        this.props.countries
+          .find(({ code }) => code === 'US')
+          ?.subdivisions.find(({ code }) => code === stateOrProvinceCode)?.name ||
+        stateOrProvinceCode;
+      const address: AddressRequestBody = {
         firstName: this.state.customFirstNameInput,
         lastName: this.state.customLastNameInput,
         phone: this.state.customPhoneInput,
@@ -415,14 +368,15 @@ export class DealerShipping extends React.PureComponent<
         address1: this.state.customAddressLine1Input,
         address2: this.state.customAddressLine2Input,
         city: this.state.customCityInput,
-        stateOrProvinceCode: this.state.ammoSelectedState,
+        stateOrProvince,
+        stateOrProvinceCode,
         shouldSaveAddress: false,
         postalCode: this.state.customPostCodeInput,
         countryCode: 'US',
-        localizedCountry: 'United States',
+        customFields: [],
       };
 
-      await this.assignCustomerItemsToAddress(address);
+      await this.assignCustomerItemsToAddress(address, true, true);
     }, 500);
 
     // Re-fired by onChangeCustomShippingField when the customer types into the
@@ -467,34 +421,21 @@ export class DealerShipping extends React.PureComponent<
             useGenericFflRecipientName,
           },
           async () => {
-            const destinationAddress = this.getCustomerDestinationAddress();
-            const stateCode =
-              destinationAddress?.stateOrProvinceCode || this.state.ammoSelectedState;
-            // BigCommerce can restore a signed-in customer's persisted shipping
-            // address before this component loads. For state-routed ammo carts,
-            // keep that address as an option instead of treating it as a choice
-            // made during this visit. The saved/new-address handlers below
-            // perform the first routing decision after explicit selection.
-            const shouldAwaitCustomerAddressSelection =
-              !this.props.customer.isGuest && this.hasAmmunition() && !restoredAmmoState;
-            const shouldReconcileInitialState =
-              !shouldAwaitCustomerAddressSelection &&
-              this.getAmmoRoutingDecision('') === 'pending' &&
-              Boolean(stateCode);
-            const shouldNotifyInitialAddress =
-              !this.props.customer.isGuest && Boolean(destinationAddress) && !restoredAmmoState;
+            let reconciledInitialState = false;
 
-            if (shouldReconcileInitialState) {
-              await this.reconcileAmmoRouting(
-                stateCode,
-                destinationAddress,
-                shouldNotifyInitialAddress,
+            if (restoredAmmoState && this.hasAmmunition()) {
+              reconciledInitialState = await this.restoreConfirmedAmmoRoutingSession(
+                restoredAmmoState,
               );
+            }
+
+            if (this.isUnmounted) {
+              return;
             }
 
             this.setState({ isLoading: false }, () => {
               if (
-                !shouldReconcileInitialState &&
+                !reconciledInitialState &&
                 useGenericFflRecipientName &&
                 this.state.selectedDealer
               ) {
@@ -522,20 +463,37 @@ export class DealerShipping extends React.PureComponent<
   }
 
   async componentDidMount(): Promise<void> {
-    const { onReady = noop, onUnhandledError } = this.props;
+    const {
+      loadShippingAddressFields,
+      loadBillingAddressFields,
+      loadShippingOptions,
+      onReady = noop,
+      onUnhandledError,
+    } = this.props;
 
     try {
-      onReady();
+      await Promise.all([
+        loadShippingAddressFields(),
+        loadShippingOptions(),
+        loadBillingAddressFields(),
+      ]);
+
+      if (!this.isUnmounted) {
+        onReady();
+      }
     } catch (error) {
-      onUnhandledError(error);
+      if (!this.isUnmounted) {
+        onUnhandledError(error);
+      }
     } finally {
-      this.setState({ isInitializing: false });
+      if (!this.isUnmounted) {
+        this.setState({ isInitializing: false });
+      }
     }
   }
 
   componentWillUnmount(): void {
     this.isUnmounted = true;
-    this.ammoRoutingRevision += 1;
     this.debouncedAssignCustomShippingAddress.cancel();
     this.debouncedCommitDealerConsignment.cancel();
   }
@@ -545,13 +503,17 @@ export class DealerShipping extends React.PureComponent<
   // ----------------------
 
   private getFFLItems() {
+    return this.getFFLItemsForDecision(this.getAmmoRoutingDecision());
+  }
+
+  private getFFLItemsForDecision(decision: AmmoRoutingDecision) {
     if (this.state.bypassFFL) {
       return [];
     }
 
     const { stateRestrictedConsignmentItems, fflConsignmentItems } = this.props;
 
-    if (this.getAmmoRoutingDecision() === 'ffl') {
+    if (decision === 'ffl') {
       return fflConsignmentItems.concat(stateRestrictedConsignmentItems);
     }
 
@@ -559,8 +521,12 @@ export class DealerShipping extends React.PureComponent<
   }
 
   private getDealerLineItems() {
+    return this.getDealerLineItemsForDecision(this.getAmmoRoutingDecision());
+  }
+
+  private getDealerLineItemsForDecision(decision: AmmoRoutingDecision) {
     if (!this.state.multiShipment) {
-      return this.getFFLItems();
+      return this.getFFLItemsForDecision(decision);
     }
 
     return this.props.cart.lineItems.physicalItems
@@ -630,6 +596,30 @@ export class DealerShipping extends React.PureComponent<
     return fflItems.length > 0;
   }
 
+  private getCurrentConsignments(checkoutState?: CheckoutSelectors): Consignment[] {
+    return (
+      checkoutState?.data?.getConsignments?.() ||
+      this.props.getCheckoutState()?.data?.getConsignments?.() ||
+      this.props.consignments
+    );
+  }
+
+  private areItemsAssignedToDestination(
+    itemIds: string[],
+    address: Address,
+    checkoutState?: CheckoutSelectors,
+  ): boolean {
+    const consignments = this.getCurrentConsignments(checkoutState);
+
+    return itemIds.every((itemId) => {
+      const owners = consignments.filter((consignment) => consignment.lineItemIds.includes(itemId));
+
+      return (
+        owners.length === 1 && isSameConsignmentDestination(owners[0].shippingAddress, address)
+      );
+    });
+  }
+
   private requiresExplicitDealerSelection(): boolean {
     const { selectedDealer } = this.state;
 
@@ -642,15 +632,11 @@ export class DealerShipping extends React.PureComponent<
     }
 
     const selectedDealerAddress = this.resolveDealerShippingAddress(selectedDealer).shippingAddress;
-    const selectedDealerConsignment = this.getAmmoRoutingConsignments().find((consignment) =>
-      isSameConsignmentDestination(consignment.shippingAddress, selectedDealerAddress),
-    );
     const requiredItemIds = this.getDealerLineItems().map((item) => item.itemId);
 
     return (
       requiredItemIds.length === 0 ||
-      !selectedDealerConsignment ||
-      !requiredItemIds.every((itemId) => selectedDealerConsignment.lineItemIds.includes(itemId))
+      !this.areItemsAssignedToDestination(requiredItemIds, selectedDealerAddress as Address)
     );
   }
 
@@ -663,15 +649,9 @@ export class DealerShipping extends React.PureComponent<
     }
 
     const dealerAddress = this.resolveDealerShippingAddress(selectedDealer).shippingAddress;
-    const dealerConsignment = this.getAmmoRoutingConsignments().find((consignment) =>
-      isSameConsignmentDestination(consignment.shippingAddress, dealerAddress),
-    );
-
-    return Boolean(
-      dealerConsignment &&
-        stateRestrictedConsignmentItems.every((item) =>
-          dealerConsignment.lineItemIds.includes(item.itemId),
-        ),
+    return this.areItemsAssignedToDestination(
+      stateRestrictedConsignmentItems.map(({ itemId }) => itemId),
+      dealerAddress as Address,
     );
   }
 
@@ -698,13 +678,10 @@ export class DealerShipping extends React.PureComponent<
       return currentPageSelection;
     }
 
-    // A persisted checkout consignment is not proof that the current guest
-    // entered this address. Only a current-page selection may be shown or used.
-    if (this.props.customer.isGuest) {
-      return undefined;
-    }
-
-    if (this.hasAmmunition() && this.isAmmoStateSelectionPending()) {
+    // A persisted checkout consignment is not proof that the customer selected
+    // it during this page session. Confirmed ammo addresses are restored into
+    // current-page state before rendering.
+    if (this.props.customer.isGuest || this.hasAmmunition()) {
       return undefined;
     }
 
@@ -716,18 +693,28 @@ export class DealerShipping extends React.PureComponent<
    * SDK's generic first-shipping-address selector and cannot confuse the FFL
    * consignment with the address used for regular products.
    */
-  private getCustomerItemsConsignment(address?: Address): Consignment | undefined {
+  private getCustomerItemsConsignment(
+    address?: Address,
+    checkoutState?: CheckoutSelectors,
+  ): Consignment | undefined {
     const customerLineItems = this.getCustomerLineItems();
 
     if (customerLineItems.length === 0) {
       return undefined;
     }
 
-    return this.getAmmoRoutingConsignments().find(
-      (consignment) =>
-        (!address || isSdkEqualAddress(consignment.shippingAddress, address)) &&
-        customerLineItems.every((item) => consignment.lineItemIds.includes(item.itemId)),
-    );
+    return this.getCurrentConsignments(checkoutState).find((candidate) => {
+      const destinationAddress = address || candidate.shippingAddress;
+
+      return (
+        isSameConsignmentDestination(candidate.shippingAddress, destinationAddress) &&
+        this.areItemsAssignedToDestination(
+          customerLineItems.map(({ itemId }) => itemId),
+          destinationAddress,
+          checkoutState,
+        )
+      );
+    });
   }
 
   private getSelectedCustomerAddress(): Address | undefined {
@@ -770,24 +757,158 @@ export class DealerShipping extends React.PureComponent<
     )?.shippingAddress;
   }
 
-  private rememberAmmoCheckoutSessionState = (
+  private getCanonicalConfirmedCustomerAddress(
+    address: Address,
+    checkoutState?: CheckoutSelectors,
+  ): Address | undefined {
+    return this.getCustomerItemsConsignment(address, checkoutState)?.shippingAddress;
+  }
+
+  private getCustomerAddressState(address: Address): Partial<DealerState> {
+    return {
+      customAddressLine1Input: address.address1 || '',
+      customAddressLine2Input: address.address2 || '',
+      customCityInput: address.city || '',
+      customCompanyInput: address.company || '',
+      customFirstNameInput: address.firstName || '',
+      customLastNameInput: address.lastName || '',
+      customPhoneInput: address.phone || '',
+      customPostCodeInput: address.postalCode || '',
+      customerAddressSelection: address,
+    };
+  }
+
+  private applyFulfilledCustomerAddress(
+    address: Address,
+    decision = this.getAmmoRoutingDecision(),
+  ): void {
+    if (this.props.customer.isGuest && this.hasOnlyAmmunition() && decision === 'standard') {
+      // The guest direct-shipping form is controlled by these local fields. Hydrate
+      // it from BigCommerce's canonical address without firing its change handler
+      // or starting another assignment.
+      this.setState(this.getCustomerAddressState(address) as DealerState);
+      return;
+    }
+
+    this.setCurrentPageCustomerAddressSelection(address);
+  }
+
+  private confirmAmmoRoutingSession(
     stateCode: string,
-    ammoStateFFLRequired: boolean | null,
-  ): void => {
-    ammoCheckoutSessionState =
-      stateCode && ammoStateFFLRequired !== null
-        ? {
-            ammoSelectedState: stateCode,
-            ammoStateFFLRequired,
-            cartId: this.props.cart.id,
-            customerIdentityKey: getCustomerIdentityKey(this.props.customer),
-          }
-        : null;
+    customerAddress: Address | undefined,
+    checkoutState: CheckoutSelectors,
+  ): boolean {
+    const normalizedStateCode = stateCode.trim().toUpperCase();
+    const decision = this.getAmmoRoutingDecision(normalizedStateCode);
+
+    if (!normalizedStateCode || decision === 'pending') {
+      return false;
+    }
+
+    const customerLineItems = this.getCustomerLineItemsForDecision(decision);
+    const confirmedCustomerAddress = customerLineItems.length
+      ? customerAddress && this.getCanonicalConfirmedCustomerAddress(customerAddress, checkoutState)
+      : undefined;
+
+    if (customerLineItems.length && !confirmedCustomerAddress) {
+      return false;
+    }
+
+    this.props.confirmAmmoRoutingSession({
+      cartId: this.props.cart.id,
+      confirmedCustomerAddress,
+      customerIdentityKey: getCustomerIdentityKey(this.props.customer),
+      stateCode: normalizedStateCode,
+    });
+
+    return true;
+  }
+
+  private restoreConfirmedAmmoRoutingSession = async (
+    session: ConfirmedAmmoRoutingSession,
+  ): Promise<boolean> => {
+    const stateCode = session.stateCode.trim().toUpperCase();
+    const decision = this.getAmmoRoutingDecision(stateCode);
+    const liveAddress = session.confirmedCustomerAddress
+      ? this.getCurrentConsignments().find((consignment) =>
+          isSameConsignmentDestination(
+            consignment.shippingAddress,
+            session.confirmedCustomerAddress,
+          ),
+        )?.shippingAddress
+      : undefined;
+    const customerAddress = liveAddress || session.confirmedCustomerAddress;
+    const customerLineItems = this.getCustomerLineItemsForDecision(decision);
+    const requiresCustomerAddress = decision !== 'pending' && customerLineItems.length > 0;
+
+    await new Promise<void>((resolve) => {
+      this.setState(
+        {
+          ...(customerAddress ? this.getCustomerAddressState(customerAddress) : {}),
+          ammoRoutingError: false,
+          ammoSelectedState: stateCode,
+          ammoStateFFLRequired: decision === 'pending' ? null : decision === 'ffl',
+          requiresAmmoRoutingReconciliation: requiresCustomerAddress && !customerAddress,
+        } as DealerState,
+        resolve,
+      );
+    });
+
+    if (requiresCustomerAddress && !customerAddress) {
+      return true;
+    }
+
+    await this.reconcileAmmoRouting(stateCode, customerAddress);
+
+    return true;
   };
 
   // ----------------------
   // Event Handlers
   // ----------------------
+
+  private reconcileFflConsignments = async (
+    assignments: Array<{
+      address: Address;
+      lineItems: Array<{ itemId: string; quantity: number }>;
+    }>,
+    unassignedLineItems: Array<{ itemId: string; quantity: number }> = [],
+  ): Promise<FflCoordinatorResult> => {
+    if (!this.isUnmounted) {
+      this.setState({ ammoRoutingError: false, isUpdatingShippingData: true });
+    }
+
+    const result = await this.props.fflConsignmentCoordinator.reconcile({
+      assignments: assignments.map(({ address, lineItems }) => ({
+        address: address as AddressRequestBody,
+        itemIds: lineItems.map(({ itemId }) => String(itemId)),
+      })),
+      cartId: this.props.cart.id,
+      unassignedItemIds: unassignedLineItems.map(({ itemId }) => String(itemId)),
+    });
+
+    if (!this.isUnmounted && result.status !== 'superseded') {
+      this.setState({ isUpdatingShippingData: false });
+    }
+
+    return result;
+  };
+
+  private reportFflCoordinatorFailure(result: FflCoordinatorResult): void {
+    if (result.status !== 'failed' || this.isUnmounted) {
+      return;
+    }
+
+    this.setState({
+      ammoRoutingError: true,
+      requiresAmmoRoutingReconciliation: true,
+    });
+    this.props.onUnhandledError(
+      result.kind === 'assign'
+        ? new AssignItemFailedError(result.error as any)
+        : new UnassignItemError(result.error as any),
+    );
+  }
 
   /**
    * When the user toggles the bypass checkbox, we clear all consignments
@@ -795,25 +916,30 @@ export class DealerShipping extends React.PureComponent<
    */
   private handleBypassFFLToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
-      const { consignments, deleteConsignment, onUnhandledError } = this.props;
-      try {
-        // First, delete all existing consignments
-        await Promise.all(
-          consignments.map((consignment) =>
-            deleteConsignment(consignment.id).catch((error) =>
-              onUnhandledError(new UnassignItemError(error as any)),
-            ),
-          ),
-        );
+      this.setState({ ammoRoutingError: false, isUpdatingShippingData: true });
+      const result = await this.props.fflConsignmentCoordinator.clearAll(this.props.cart.id);
 
-        // Set state to enable bypass mode and disable multi-shipment
-        this.setState({
-          bypassFFL: true,
-          multiShipment: false,
-        });
+      if (!this.isUnmounted && result.status !== 'superseded') {
+        this.setState({ isUpdatingShippingData: false });
+      }
+
+      if (result.status === 'failed') {
+        this.reportFflCoordinatorFailure(result);
+        return;
+      }
+
+      if (result.status === 'fulfilled') {
+        this.props.clearConfirmedAmmoRoutingSession();
         this.props.setSelectedFFL(null);
-      } catch (error) {
-        onUnhandledError(new UnassignItemError(error as any));
+
+        if (!this.isUnmounted) {
+          this.setState({
+            ammoRoutingError: false,
+            bypassFFL: true,
+            multiShipment: false,
+            requiresAmmoRoutingReconciliation: false,
+          });
+        }
       }
     }
   };
@@ -821,23 +947,28 @@ export class DealerShipping extends React.PureComponent<
   handleManualFFLInput: () => Promise<void> = async () => {
     const { manualFflInput } = this.state;
     const dealerLineItems = this.getDealerLineItems();
+    const result = await this.reconcileFflConsignments([], dealerLineItems);
 
-    // A persisted consignment may mix dealer-bound and ordinary items. Remove
-    // only the dealer-bound lines so switching input modes never destroys the
-    // customer's normal shipping assignment.
-    for (const consignment of this.getAmmoRoutingConsignments()) {
-      const result = await this.unassignLineItemsFromConsignment(consignment, dealerLineItems);
-
-      if (result !== 'success') {
-        return;
-      }
+    if (result.status === 'failed') {
+      this.reportFflCoordinatorFailure(result);
+      return;
     }
 
-    this.setState({
-      manualFflInput: !manualFflInput,
-      selectedDealer: null,
-    });
+    if (result.status === 'superseded') {
+      return;
+    }
+
+    this.props.clearConfirmedAmmoRoutingSession();
     this.props.setSelectedFFL(null);
+
+    if (!this.isUnmounted) {
+      this.setState({
+        ammoRoutingError: false,
+        manualFflInput: !manualFflInput,
+        requiresAmmoRoutingReconciliation: false,
+        selectedDealer: null,
+      });
+    }
   };
 
   toggleMapSelector: () => void = () => {
@@ -847,7 +978,7 @@ export class DealerShipping extends React.PureComponent<
     });
   };
 
-  selectDealer: (dealer: any) => void = async (dealer: any) => {
+  selectDealer: (dealer: any) => Promise<void> = (dealer: any) => {
     // API call to track dealer selection for analytics purposes
     fetch(
       `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealer.id}/select`,
@@ -866,21 +997,21 @@ export class DealerShipping extends React.PureComponent<
     // onChangeCustomShippingField re-fires it (debounced) once they are, so the
     // customer can pick a dealer first and type their name afterward without
     // having to re-pick the dealer.
-    this.setState(
-      {
-        selectedDealer: dealer,
-        showLocator: false,
-      },
-      () => {
-        this.startDealerConsignmentCommit();
-      },
-    );
+    return new Promise<void>((resolve) => {
+      this.setState(
+        {
+          selectedDealer: dealer,
+          showLocator: false,
+        },
+        () => {
+          this.startDealerConsignmentCommit().then(() => resolve());
+        },
+      );
+    });
   };
 
   private startDealerConsignmentCommit = (): Promise<boolean> => {
-    const commit = this.commitDealerConsignment();
-    this.pendingDealerCommit = commit;
-    return commit;
+    return this.commitDealerConsignment();
   };
 
   private resolveDealerShippingAddress = (selectedDealer = this.state.selectedDealer) => {
@@ -914,20 +1045,10 @@ export class DealerShipping extends React.PureComponent<
    * The recipient name lives in shippingAddress.firstName / .lastName. The
    * `company` value is resolved upstream and preserved from the iframe payload.
    */
-  commitDealerConsignment: (
-    skipExistingConsignmentCleanup?: boolean,
-    lineItemsOverride?: Array<{ itemId: string; quantity: number }>,
-    ammoRoutingRevision?: number,
-    selectedDealerOverride?: any,
-  ) => Promise<boolean> = async (
-    skipExistingConsignmentCleanup = false,
-    lineItemsOverride,
-    ammoRoutingRevision,
-    selectedDealerOverride,
-  ) => {
-    const { assignItem, getFields, onUnhandledError } = this.props;
-    const selectedDealer = selectedDealerOverride ?? this.state.selectedDealer;
-    const fflItems = lineItemsOverride ?? this.getDealerLineItems();
+  commitDealerConsignment: () => Promise<boolean> = async () => {
+    const { getFields, onUnhandledError } = this.props;
+    const selectedDealer = this.state.selectedDealer;
+    const fflItems = this.getDealerLineItems();
 
     if (!canCommitDealerConsignment(Boolean(selectedDealer), fflItems.length)) {
       return false;
@@ -947,21 +1068,12 @@ export class DealerShipping extends React.PureComponent<
         customLastNameInputError: !recipientName.lastName,
       });
 
-      // Remove only dealer-bound lines. A consignment can also contain ordinary
-      // items, and deleting it would erase the customer's normal assignment.
-      if (!skipExistingConsignmentCleanup) {
-        for (const consignment of this.getAmmoRoutingConsignments()) {
-          if (
-            (await this.unassignLineItemsFromConsignment(
-              consignment,
-              fflItems,
-              ammoRoutingRevision,
-            )) !== 'success'
-          ) {
-            return false;
-          }
-        }
+      const result = await this.reconcileFflConsignments([], fflItems);
+
+      if (result.status === 'failed') {
+        this.reportFflCoordinatorFailure(result);
       }
+
       return false;
     }
 
@@ -974,25 +1086,16 @@ export class DealerShipping extends React.PureComponent<
     const shippingFields = getFields(shippingAddress.countryCode).filter((f: any) => !f.custom);
 
     if (!isValidAddress(shippingAddress, shippingFields)) {
-      if (this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
-        this.setState({ ammoRoutingError: true });
-        onUnhandledError(new AssignItemInvalidAddressError());
-      }
+      this.setState({ ammoRoutingError: true });
+      onUnhandledError(new AssignItemInvalidAddressError());
       return false;
     }
 
-    // BigCommerce persists consignments across page refreshes. A newly explicit
-    // selection may therefore point at a consignment that already owns some or
-    // all of these items. Only submit the missing delta; assignItemsToAddress is
-    // additive and would otherwise duplicate an item when the same dealer is
-    // selected again.
-    const existingTarget = this.getAmmoRoutingConsignments().find((consignment) =>
-      isSdkEqualAddress(consignment.shippingAddress, shippingAddress),
-    );
-    const existingItemIds = new Set(existingTarget?.lineItemIds || []);
-    const missingFflItems = fflItems.filter((item) => !existingItemIds.has(item.itemId));
+    const result = await this.reconcileFflConsignments([
+      { address: shippingAddress, lineItems: fflItems },
+    ]);
 
-    if (missingFflItems.length === 0) {
+    if (result.status === 'fulfilled') {
       if (shippingAddress.fflID) {
         this.props.setSelectedFFL(shippingAddress);
       }
@@ -1002,28 +1105,8 @@ export class DealerShipping extends React.PureComponent<
       return true;
     }
 
-    const consignment = {
-      lineItems: missingFflItems,
-      shippingAddress,
-    };
-
-    try {
-      const checkoutState = await assignItem(consignment);
-      this.captureAmmoRoutingConsignments(checkoutState);
-      if (shippingAddress.fflID) {
-        this.props.setSelectedFFL(shippingAddress);
-      }
-      if (!this.state.requiresAmmoRoutingReconciliation) {
-        this.setState({ ammoRoutingError: false });
-      }
-      return true;
-    } catch (e) {
-      if (this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
-        this.setState({ ammoRoutingError: true });
-        onUnhandledError(new AssignItemFailedError(e as any));
-      }
-      return false;
-    }
+    this.reportFflCoordinatorFailure(result);
+    return false;
   };
 
   handleCancel: () => void = () => {
@@ -1077,7 +1160,11 @@ export class DealerShipping extends React.PureComponent<
   };
 
   private getCustomerLineItems = () => {
-    const fflItemIds = new Set(this.getFFLItems().map((item) => item.itemId));
+    return this.getCustomerLineItemsForDecision(this.getAmmoRoutingDecision());
+  };
+
+  private getCustomerLineItemsForDecision = (decision: AmmoRoutingDecision) => {
+    const fflItemIds = new Set(this.getFFLItemsForDecision(decision).map((item) => item.itemId));
 
     if (this.state.multiShipment && fflItemIds.size > 0) {
       return [];
@@ -1094,261 +1181,96 @@ export class DealerShipping extends React.PureComponent<
   private assignCustomerItemsToAddress = async (
     address: Address,
     clearRoutingErrorOnSuccess = true,
-    ammoRoutingRevision?: number,
-  ): Promise<boolean> => {
+    confirmAmmoRoutingOnSuccess = false,
+  ): Promise<boolean | undefined> => {
     const lineItems = this.getCustomerLineItems();
-    const targetConsignment = this.getAmmoRoutingConsignments().find((consignment) =>
-      isSdkEqualAddress(consignment.shippingAddress, address),
-    );
-    const assignedItemIds = new Set(targetConsignment?.lineItemIds || []);
-    const missingLineItems = lineItems.filter((item) => !assignedItemIds.has(item.itemId));
+    const result = await this.reconcileFflConsignments([{ address, lineItems }]);
 
-    if (missingLineItems.length === 0) {
-      if (clearRoutingErrorOnSuccess && !this.state.requiresAmmoRoutingReconciliation) {
-        this.setState({ ammoRoutingError: false });
-      }
-      return true;
-    }
+    if (result.status === 'fulfilled') {
+      if (confirmAmmoRoutingOnSuccess) {
+        const confirmed = this.confirmAmmoRoutingSession(
+          this.state.ammoSelectedState,
+          address,
+          result.checkoutState,
+        );
 
-    try {
-      const checkoutState = await this.props.assignItem({ address, lineItems: missingLineItems });
-      this.captureAmmoRoutingConsignments(checkoutState);
-
-      // The SDK promise resolving only proves that the request completed. When
-      // selectors are available, require the returned checkout to show every
-      // direct-shipping item under the requested address before reporting
-      // success or displaying that address as fulfilled.
-      if (checkoutState?.data?.getConsignments?.() && !this.getCustomerItemsConsignment(address)) {
-        throw new Error('BigCommerce did not assign every customer item to the selected address');
-      }
-
-      if (clearRoutingErrorOnSuccess && !this.state.requiresAmmoRoutingReconciliation) {
-        this.setState({ ammoRoutingError: false });
-      }
-      return true;
-    } catch (error) {
-      if (this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
-        this.setState({ ammoRoutingError: true });
-        this.props.onUnhandledError(new AssignItemFailedError(error as any));
-      }
-      return false;
-    }
-  };
-
-  private unassignAmmunition = async (ammoRoutingRevision?: number): Promise<boolean> => {
-    const result = await this.unassignAmmunitionPass(ammoRoutingRevision, true);
-
-    if (result === 'delete-not-found') {
-      return this.recoverAmmunitionAfterDeleteNotFound(ammoRoutingRevision);
-    }
-
-    return result === 'success';
-  };
-
-  private unassignAmmunitionPass = async (
-    ammoRoutingRevision: number | undefined,
-    deferDeleteNotFound: boolean,
-  ): Promise<UnassignLineItemsResult> => {
-    const currentConsignments = this.props.getCurrentConsignments();
-
-    if (currentConsignments !== undefined) {
-      this.ammoRoutingConsignments = currentConsignments;
-    }
-
-    for (const consignment of this.getAmmoRoutingConsignments()) {
-      const result = await this.unassignLineItemsFromConsignment(
-        consignment,
-        this.props.stateRestrictedConsignmentItems,
-        ammoRoutingRevision,
-        deferDeleteNotFound,
-      );
-
-      if (result !== 'success') {
-        return result;
-      }
-    }
-
-    return 'success';
-  };
-
-  private getRemainingConsignmentLineItems = (
-    consignment: Consignment,
-    lineItemsToRemove: Array<{ itemId: string; quantity: number }>,
-  ) => {
-    const removedItemIds = new Set(lineItemsToRemove.map(({ itemId }) => itemId));
-    const physicalItemsById = new Map(
-      this.props.cart.lineItems.physicalItems.map((item) => [item.id, item]),
-    );
-
-    return consignment.lineItemIds
-      .filter((itemId) => !removedItemIds.has(itemId))
-      .map((itemId) => physicalItemsById.get(itemId))
-      .filter(Boolean)
-      .map((item) => ({
-        itemId: item.id,
-        quantity: item.quantity,
-      }));
-  };
-
-  private unassignLineItemsFromConsignment = async (
-    consignment: Consignment,
-    lineItems: Array<{ itemId: string; quantity: number }>,
-    ammoRoutingRevision?: number,
-    deferDeleteNotFound = false,
-  ): Promise<UnassignLineItemsResult> => {
-    const assignedLineItems = lineItems.filter((item) =>
-      consignment.lineItemIds.includes(item.itemId),
-    );
-
-    if (assignedLineItems.length === 0) {
-      return 'success';
-    }
-
-    try {
-      const remainingLineItems = this.getRemainingConsignmentLineItems(
-        consignment,
-        assignedLineItems,
-      );
-      let checkoutState: CheckoutSelectors;
-
-      if (remainingLineItems.length) {
-        checkoutState = await this.props.updateConsignment({
-          id: consignment.id,
-          lineItems: remainingLineItems,
-        });
-      } else {
-        try {
-          checkoutState = await this.props.deleteConsignment(consignment.id);
-        } catch (error) {
-          if (deferDeleteNotFound && isRequestError(error) && error.status === 404) {
-            return 'delete-not-found';
-          }
-
-          throw error;
+        if (!confirmed) {
+          const failure: FflCoordinatorResult = {
+            status: 'failed',
+            kind: 'assign',
+            error: new Error('BigCommerce did not return the confirmed customer destination'),
+          };
+          this.reportFflCoordinatorFailure(failure);
+          return false;
         }
       }
 
-      this.captureAmmoRoutingConsignments(checkoutState);
-      return 'success';
-    } catch (error) {
-      this.reportUnassignFailure(error, ammoRoutingRevision);
-      return 'failure';
-    }
-  };
+      if (!this.isUnmounted) {
+        const fulfilledAddress = this.getCanonicalConfirmedCustomerAddress(
+          address,
+          result.checkoutState,
+        );
 
-  private recoverAmmunitionAfterDeleteNotFound = async (
-    ammoRoutingRevision?: number,
-  ): Promise<boolean> => {
-    if (!this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
+        if (fulfilledAddress) {
+          this.applyFulfilledCustomerAddress(fulfilledAddress);
+        }
+
+        if (confirmAmmoRoutingOnSuccess) {
+          this.setState({ requiresAmmoRoutingReconciliation: false });
+        }
+
+        if (clearRoutingErrorOnSuccess) {
+          this.setState({ ammoRoutingError: false });
+        }
+      }
+      return true;
+    }
+
+    if (result.status === 'failed') {
+      this.reportFflCoordinatorFailure(result);
       return false;
     }
 
-    try {
-      if (!(await this.drainPendingDealerCommits(ammoRoutingRevision))) {
-        return false;
-      }
-
-      const checkoutState = await this.props.reloadCheckout();
-      const checkout = checkoutState?.data?.getCheckout?.();
-      const cart = checkoutState?.data?.getCart?.();
-
-      if (
-        !checkout ||
-        !cart ||
-        checkout.id !== this.props.cart.id ||
-        cart.id !== this.props.cart.id
-      ) {
-        throw new Error('Reloaded checkout does not match the active cart');
-      }
-
-      this.ammoRoutingConsignments = checkoutState.data.getConsignments?.() || [];
-
-      if (!this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
-        return false;
-      }
-
-      if (!(await this.drainPendingDealerCommits(ammoRoutingRevision))) {
-        return false;
-      }
-
-      if (this.isAmmunitionAssignedToSelectedDealer()) {
-        return true;
-      }
-
-      const retryResult = await this.unassignAmmunitionPass(ammoRoutingRevision, false);
-
-      return retryResult === 'success';
-    } catch (error) {
-      this.reportUnassignFailure(error, ammoRoutingRevision);
-      return false;
-    }
+    return undefined;
   };
 
-  private reportUnassignFailure = (error: unknown, ammoRoutingRevision?: number): void => {
-    if (this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
-      this.setState({
-        ammoRoutingError: true,
-        requiresAmmoRoutingReconciliation: true,
-      });
-      this.props.onUnhandledError(new UnassignItemError(error as any));
-    }
-  };
-
-  private drainPendingDealerCommits = async (ammoRoutingRevision?: number): Promise<boolean> => {
-    while (this.pendingDealerCommit) {
-      const pendingCommit = this.pendingDealerCommit;
-      await pendingCommit;
-
-      if (this.pendingDealerCommit === pendingCommit) {
-        this.pendingDealerCommit = null;
-      }
-
-      if (!this.shouldReportAmmoRoutingError(ammoRoutingRevision)) {
-        return false;
-      }
-    }
-
-    return true;
-  };
-
-  private shouldReportAmmoRoutingError = (revision?: number): boolean =>
-    revision === undefined || revision === this.ammoRoutingRevision;
-
-  private getAmmoRoutingConsignments = (): Consignment[] =>
-    this.ammoRoutingConsignments || this.props.consignments;
-
-  private captureAmmoRoutingConsignments = (checkoutState: CheckoutSelectors): void => {
-    const consignments = checkoutState?.data?.getConsignments?.();
-
-    if (consignments) {
-      this.ammoRoutingConsignments = consignments;
-    }
-  };
-
-  private reconcileAmmoRouting = (
+  private reconcileAmmoRouting = async (
     stateCode: string,
     customerAddress?: Address,
     notifyCustomer = false,
   ): Promise<boolean> => {
-    if (!this.isAmmoRoutingInFlight) {
-      // A dealer commit may have completed before React received the updated
-      // consignments. Keep its selector snapshot so the routing delta cannot
-      // add the firearm a second time.
-      if (!this.pendingDealerCommit) {
-        this.ammoRoutingConsignments =
-          this.props.getCurrentConsignments() ?? this.props.consignments;
-      }
-      this.isAmmoRoutingInFlight = true;
-    }
-
     const normalizedStateCode = stateCode.trim().toUpperCase();
-    const revision = ++this.ammoRoutingRevision;
-    const nextDecision = this.getAmmoRoutingDecision(normalizedStateCode);
+    const decision = this.getAmmoRoutingDecision(normalizedStateCode);
+    const wasFflRequired = this.state.ammoStateFFLRequired === true;
+    const retainedDealer = this.state.selectedDealer;
+    const shouldClearAmmoOnlyDealer = !this.hasFirearms() && decision !== 'ffl';
+    const ammoStateFFLRequired = decision === 'pending' ? null : decision === 'ffl';
+    const customerLineItems =
+      decision === 'pending' ? [] : this.getCustomerLineItemsForDecision(decision);
+    const requiresCustomerAddress = decision !== 'pending' && customerLineItems.length > 0;
+    const rollbackAddress = customerAddress
+      ? this.props.customer.isGuest
+        ? this.props.customerAddressSelection
+        : this.getCustomerItemsConsignment()?.shippingAddress
+      : undefined;
     const shouldShowFflNotice =
       notifyCustomer &&
       this.getAmmoRoutingDecision('') === 'pending' &&
-      nextDecision === 'ffl' &&
+      decision === 'ffl' &&
       !this.isAmmunitionAssignedToSelectedDealer();
+    const newState: Partial<DealerState> = {
+      ammoFflNoticeState: shouldShowFflNotice
+        ? customerAddress?.stateOrProvince || normalizedStateCode
+        : '',
+      ammoRoutingError: false,
+      ammoSelectedState: normalizedStateCode,
+      ammoStateFFLRequired,
+      isUpdatingShippingData: true,
+      requiresAmmoRoutingReconciliation: false,
+      selectedDealer: retainedDealer,
+      showAmmoFflNotice: shouldShowFflNotice,
+      showLocator: false,
+    };
 
     if (customerAddress) {
       // Preserve the click immediately while the SDK routing queue catches up.
@@ -1358,173 +1280,156 @@ export class DealerShipping extends React.PureComponent<
 
     this.debouncedAssignCustomShippingAddress.cancel();
     this.debouncedCommitDealerConsignment.cancel();
-    this.setState({
-      ammoRoutingError: false,
-      ammoFflNoticeState: shouldShowFflNotice
-        ? customerAddress?.stateOrProvince || normalizedStateCode
-        : '',
-      isUpdatingShippingData: true,
-      requiresAmmoRoutingReconciliation: false,
-      showAmmoFflNotice: shouldShowFflNotice,
-    });
 
-    this.ammoRoutingQueue = this.ammoRoutingQueue
-      .catch(() => false)
-      .then(async () => {
-        if (revision !== this.ammoRoutingRevision) {
-          return false;
-        }
-
-        try {
-          return await this.performAmmoRoutingReconciliation(
-            normalizedStateCode,
-            customerAddress,
-            revision,
-          );
-        } catch (error) {
-          if (revision === this.ammoRoutingRevision) {
-            this.setState({
-              ammoRoutingError: true,
-              requiresAmmoRoutingReconciliation: true,
-            });
-            this.props.onUnhandledError(new UnassignItemError(error as any));
-          }
-          return false;
-        }
-      })
-      .then((succeeded) => {
-        if (revision === this.ammoRoutingRevision) {
-          this.isAmmoRoutingInFlight = false;
-
-          if (customerAddress) {
-            const fulfilledAddress =
-              this.getCustomerItemsConsignment(customerAddress)?.shippingAddress;
-            const rollbackAddress = this.props.customer.isGuest
-              ? this.props.customerAddressSelection
-              : this.getCustomerItemsConsignment()?.shippingAddress;
-
-            this.setCurrentPageCustomerAddressSelection(
-              succeeded ? fulfilledAddress || customerAddress : rollbackAddress,
-              succeeded,
-            );
-          }
-
-          this.setState((state) => ({
-            ammoRoutingError: !succeeded,
-            isUpdatingShippingData: false,
-            requiresAmmoRoutingReconciliation: !succeeded,
-            showAmmoFflNotice: succeeded && state.showAmmoFflNotice,
-          }));
-        }
-        return succeeded;
-      });
-
-    return this.ammoRoutingQueue;
-  };
-
-  private performAmmoRoutingReconciliation = async (
-    stateCode: string,
-    customerAddress: Address | undefined,
-    revision: number,
-  ): Promise<boolean> => {
-    const decision = this.getAmmoRoutingDecision(stateCode);
-    const wasFflRequired = this.state.ammoStateFFLRequired === true;
-
-    // Dealer changes use the same SDK shipping queue as ammo moves. Drain all
-    // dealer commits that were started before this routing pass, including a
-    // newer selection made while an earlier commit was still resolving.
-    if (!(await this.drainPendingDealerCommits(revision))) {
+    if (requiresCustomerAddress && !customerAddress) {
+      this.setState({
+        ...newState,
+        isUpdatingShippingData: false,
+        requiresAmmoRoutingReconciliation: true,
+        showAmmoFflNotice: false,
+      } as DealerState);
       return false;
     }
 
-    // A consignment only proves where BigCommerce currently has an item. It
-    // does not prove that its address came from the FFL selector. Dealer
-    // identity must come from an explicit selection made on this page.
-    const retainedDealer = this.state.selectedDealer;
-
-    const shouldClearAmmoOnlyDealer = !this.hasFirearms() && decision !== 'ffl';
-    const ammoStateFFLRequired = decision === 'pending' ? null : decision === 'ffl';
-    const newState: Partial<DealerState> = {
-      ammoSelectedState: stateCode,
-      ammoStateFFLRequired,
-      selectedDealer: shouldClearAmmoOnlyDealer ? null : retainedDealer,
-      showLocator: false,
-    };
-
-    if (shouldClearAmmoOnlyDealer) {
-      this.props.setSelectedFFL(null);
-
-      if (wasFflRequired) {
-        Object.assign(newState, this.getClearedCustomShippingFields());
-      }
-    }
-
-    await new Promise<void>((resolve) => {
-      this.setState(newState as DealerState, resolve);
-    });
-
-    if (revision !== this.ammoRoutingRevision) {
-      return false;
-    }
-
-    this.rememberAmmoCheckoutSessionState(stateCode, ammoStateFFLRequired);
+    this.setState(newState as DealerState);
 
     const dealerShippingAddress =
       !shouldClearAmmoOnlyDealer && retainedDealer
         ? this.resolveDealerShippingAddress(retainedDealer).shippingAddress
         : undefined;
+    const dealerLineItems = dealerShippingAddress
+      ? this.getDealerLineItemsForDecision(decision)
+      : [];
 
-    if (dealerShippingAddress?.fflID) {
+    if (dealerShippingAddress && dealerLineItems.length) {
+      const { recipientName } = this.resolveDealerShippingAddress(retainedDealer);
+
+      if (
+        !this.state.useGenericFflRecipientName &&
+        (!recipientName.firstName || !recipientName.lastName)
+      ) {
+        this.setState({
+          ammoRoutingError: true,
+          customFirstNameInputError: !recipientName.firstName,
+          customLastNameInputError: !recipientName.lastName,
+          isUpdatingShippingData: false,
+          requiresAmmoRoutingReconciliation: true,
+          showAmmoFflNotice: false,
+        });
+
+        if (customerAddress) {
+          this.setCurrentPageCustomerAddressSelection(rollbackAddress);
+        }
+
+        return false;
+      }
+
+      const shippingFields = this.props
+        .getFields(dealerShippingAddress.countryCode)
+        .filter((field: any) => !field.custom);
+
+      if (!isValidAddress(dealerShippingAddress, shippingFields)) {
+        this.setState({
+          ammoRoutingError: true,
+          isUpdatingShippingData: false,
+          requiresAmmoRoutingReconciliation: true,
+          showAmmoFflNotice: false,
+        });
+        this.props.onUnhandledError(new AssignItemInvalidAddressError());
+
+        if (customerAddress) {
+          this.setCurrentPageCustomerAddressSelection(rollbackAddress);
+        }
+
+        return false;
+      }
+    }
+
+    const assignments = [];
+    const unassignedLineItems = [];
+
+    if (dealerShippingAddress && dealerLineItems.length) {
+      assignments.push({ address: dealerShippingAddress, lineItems: dealerLineItems });
+    }
+
+    if (decision !== 'pending' && customerAddress) {
+      assignments.push({
+        address: customerAddress,
+        lineItems: customerLineItems,
+      });
+    }
+
+    if (decision === 'pending' || (decision === 'ffl' && !dealerShippingAddress)) {
+      unassignedLineItems.push(...this.props.stateRestrictedConsignmentItems);
+    }
+
+    const result = await this.reconcileFflConsignments(assignments, unassignedLineItems);
+
+    if (result.status === 'superseded') {
+      return false;
+    }
+
+    if (result.status === 'failed') {
+      this.reportFflCoordinatorFailure(result);
+
+      if (this.isUnmounted) {
+        return false;
+      }
+
+      if (customerAddress) {
+        this.setCurrentPageCustomerAddressSelection(rollbackAddress);
+      }
+
+      this.setState({ showAmmoFflNotice: false });
+      return false;
+    }
+
+    const fulfilledAddress = customerAddress
+      ? this.getCanonicalConfirmedCustomerAddress(customerAddress, result.checkoutState)
+      : undefined;
+
+    if (decision === 'pending') {
+      this.props.clearConfirmedAmmoRoutingSession();
+    } else if (
+      !this.confirmAmmoRoutingSession(
+        normalizedStateCode,
+        fulfilledAddress || customerAddress,
+        result.checkoutState,
+      )
+    ) {
+      const failure: FflCoordinatorResult = {
+        status: 'failed',
+        kind: 'assign',
+        error: new Error('BigCommerce did not return the confirmed customer destination'),
+      };
+      this.reportFflCoordinatorFailure(failure);
+      return false;
+    }
+
+    if (this.isUnmounted) {
+      return true;
+    }
+
+    if (shouldClearAmmoOnlyDealer) {
+      this.setState({
+        ...(wasFflRequired ? this.getClearedCustomShippingFields() : {}),
+        selectedDealer: null,
+      });
+      this.props.setSelectedFFL(null);
+    } else if (dealerShippingAddress?.fflID) {
       this.props.setSelectedFFL(dealerShippingAddress);
     }
 
-    if (decision === 'pending') {
-      return this.unassignAmmunition(revision);
+    if (fulfilledAddress) {
+      this.applyFulfilledCustomerAddress(fulfilledAddress, decision);
     }
 
-    if (decision === 'ffl') {
-      if (dealerShippingAddress) {
-        const dealerConsignment = this.getAmmoRoutingConsignments().find((consignment) =>
-          isSdkEqualAddress(consignment.shippingAddress, dealerShippingAddress),
-        );
-        const dealerLineItems = this.getDealerLineItems();
-        const dealerItemIds = new Set(dealerConsignment?.lineItemIds || []);
-        const missingDealerLineItems = dealerLineItems.filter(
-          (item) => !dealerItemIds.has(item.itemId),
-        );
-
-        if (missingDealerLineItems.length > 0) {
-          const committed = await this.commitDealerConsignment(
-            true,
-            missingDealerLineItems,
-            revision,
-            retainedDealer,
-          );
-
-          if (!committed) {
-            if (revision === this.ammoRoutingRevision) {
-              this.setState({
-                ammoRoutingError: true,
-                requiresAmmoRoutingReconciliation: true,
-              });
-            }
-            return false;
-          }
-        }
-      } else if (!(await this.unassignAmmunition(revision))) {
-        return false;
-      }
-    } else if (!customerAddress && !(await this.unassignAmmunition(revision))) {
-      return false;
-    }
-
-    if (revision !== this.ammoRoutingRevision) {
-      return false;
-    }
-
-    if (customerAddress) {
-      return this.assignCustomerItemsToAddress(customerAddress, false, revision);
-    }
+    this.setState((state) => ({
+      ammoRoutingError: false,
+      isUpdatingShippingData: false,
+      requiresAmmoRoutingReconciliation: false,
+      showAmmoFflNotice: state.showAmmoFflNotice,
+    }));
 
     return true;
   };
@@ -1624,6 +1529,11 @@ export class DealerShipping extends React.PureComponent<
 
     this.setCurrentPageCustomerAddressSelection(address);
     const succeeded = await this.assignCustomerItemsToAddress(address);
+
+    if (succeeded === undefined) {
+      return;
+    }
+
     const fulfilledAddress = this.getCustomerItemsConsignment(address)?.shippingAddress;
     const rollbackAddress = this.props.customer.isGuest
       ? this.props.customerAddressSelection
@@ -1685,7 +1595,6 @@ export class DealerShipping extends React.PureComponent<
         )
       : undefined;
     const currentPageCustomerAddress = this.getCurrentPageCustomerAddressSelection();
-    const selectedCustomerAddress = this.getSelectedCustomerAddress();
     const { itemAddingAddress } = this.state;
 
     return (
@@ -1746,7 +1655,10 @@ export class DealerShipping extends React.PureComponent<
           this.state.withAmmoSubscription &&
           customer.isGuest &&
           !this.state.bypassFFL && (
-            <StatesDropdown validateSelectedState={this.validateSelectedState} />
+            <StatesDropdown
+              selectedState={this.state.ammoSelectedState}
+              validateSelectedState={this.validateSelectedState}
+            />
           )}
 
         {/* ========== FFL Consignment Area ========== */}
@@ -1958,12 +1870,7 @@ export class DealerShipping extends React.PureComponent<
                 addresses={customer.addresses}
                 onSelectAddress={this.handleSelectAddress}
                 onUseNewAddress={this.handleUseNewAddress}
-                selectedAddress={
-                  currentPageCustomerAddress ||
-                  (this.state.ammoSelectedState !== '' && stateRestrictedConsignmentItems.length > 0
-                    ? selectedCustomerAddress
-                    : undefined)
-                }
+                selectedAddress={currentPageCustomerAddress}
               />
             )}
           </div>
@@ -2052,26 +1959,6 @@ export class DealerShipping extends React.PureComponent<
     });
   };
 
-  private onUseNewAddress: (address: Address, itemId: string) => void = async (address, itemId) => {
-    const { unassignItem, onUnhandledError } = this.props;
-
-    try {
-      await unassignItem({
-        shippingAddress: address,
-        lineItems: [
-          {
-            quantity: 1,
-            itemId,
-          },
-        ],
-      });
-
-      location.href = '/account.php?action=add_shipping_address&from=checkout';
-    } catch (e) {
-      onUnhandledError(new UnassignItemError(e as any));
-    }
-  };
-
   private handleSaveAddress: (address: AddressFormValues) => void = async (address) => {
     const { createCustomerAddress, customer } = this.props;
     const { itemAddingAddress } = this.state;
@@ -2120,6 +2007,7 @@ export class DealerShipping extends React.PureComponent<
       this.state.isLoading ||
       this.state.isUpdatingShippingData ||
       this.state.ammoRoutingError ||
+      this.state.requiresAmmoRoutingReconciliation ||
       this.requiresExplicitDealerSelection() ||
       this.isAmmoStateSelectionPending() ||
       hasUnassignedLineItems(consignments, cart.lineItems)
@@ -2216,6 +2104,7 @@ export class DealerShipping extends React.PureComponent<
       isAmmoStateSelectionPending: this.isAmmoStateSelectionPending(),
       isLoading: isLoading || isStoreSettingsLoading,
       isUpdatingShippingData,
+      requiresAmmoRoutingReconciliation: this.state.requiresAmmoRoutingReconciliation,
     });
   };
 }
@@ -2286,7 +2175,6 @@ export function mapToDealerShippingProps({
     !shouldShowMultiShipping && consignments.length > 1 ? undefined : getShippingAddress();
 
   return {
-    assignItem: checkoutService.assignItemsToAddress,
     billingAddress: getBillingAddress(),
     cart,
     consignments,
@@ -2295,12 +2183,13 @@ export function mapToDealerShippingProps({
     customer,
     customerMessage: checkout.customerMessage,
     deinitializeShippingMethod: checkoutService.deinitializeShipping,
-    deleteConsignment: checkoutService.deleteConsignment,
-    updateConsignment: checkoutService.updateConsignment,
     getFields: getShippingAddressFields,
     getBillingFields: getBillingAddressFields,
     googleMapsApiKey,
     initializeShippingMethod: checkoutService.initializeShipping,
+    loadShippingAddressFields: checkoutService.loadShippingAddressFields,
+    loadBillingAddressFields: checkoutService.loadBillingAddressFields,
+    loadShippingOptions: checkoutService.loadShippingOptions,
     isGuest: customer.isGuest,
     isInitializing: isLoadingShippingCountries() || isLoadingShippingOptions(),
     isLoading,
@@ -2311,20 +2200,9 @@ export function mapToDealerShippingProps({
     shouldShowAddAddressInCheckout: features['CHECKOUT-4726.add_address_in_multishipping_checkout'],
     shouldShowOrderComments: enableOrderComments,
     signOut: checkoutService.signOutCustomer,
-    unassignItem: checkoutService.unassignItemsToAddress,
     updateBillingAddress: checkoutService.updateBillingAddress,
     createCustomerAddress: checkoutService.createCustomerAddress,
-    getCurrentConsignments: () => checkoutService.getState().data.getConsignments(),
-    reloadCheckout: () =>
-      checkoutService.loadCheckout(cart.id, {
-        params: {
-          include: {
-            'consignments.availableShippingOptions': true,
-            'cart.lineItems.physicalItems.categoryNames': true,
-            'cart.lineItems.digitalItems.categoryNames': true,
-          },
-        },
-      }),
+    getCheckoutState: () => checkoutService.getState(),
     updateCheckout: checkoutService.updateCheckout,
     updateShippingAddress: checkoutService.updateShippingAddress,
   };

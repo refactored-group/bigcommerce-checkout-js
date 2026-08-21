@@ -1,6 +1,7 @@
 import React from 'react';
 
 interface StatesDropdownProps {
+  selectedState: string;
   validateSelectedState: any;
 }
 
@@ -30,6 +31,7 @@ export default class StatesDropdown extends React.PureComponent<
             className="form-select optimizedCheckout-form-select"
             onChange={this.props.validateSelectedState}
             id="provinceCodeInput"
+            value={this.props.selectedState}
           >
             <option value="">Select a state</option>
             <option value="AL">Alabama</option>

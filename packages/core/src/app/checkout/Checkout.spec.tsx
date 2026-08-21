@@ -40,7 +40,6 @@ import { getShippingAddress } from '../shipping/shipping-addresses.mock';
 import Checkout, {
     Checkout as CheckoutComponent,
     CheckoutProps,
-    deleteConsignmentsSequentially,
     getCustomerIdentityKey,
     shouldForceFreshFflShippingStep,
     shouldRequireFreshFflSelection,
@@ -164,34 +163,6 @@ describe('Checkout', () => {
         expect(shouldResetGuestFflShipping({ isGuest: false }, true, consignments)).toBe(false);
         expect(shouldResetGuestFflShipping({ isGuest: true }, false, consignments)).toBe(false);
         expect(shouldResetGuestFflShipping({ isGuest: true }, true, [])).toBe(false);
-    });
-
-    it('deletes multiple consignments sequentially', async () => {
-        const first = getConsignment();
-        const second = { ...getConsignment(), id: 'consignment-2' };
-        const calls: string[] = [];
-        let releaseFirst: (() => void) | undefined;
-        const firstDelete = new Promise<CheckoutSelectors>((resolve) => {
-            releaseFirst = () => resolve(checkoutState);
-        });
-        const deleteConsignment = jest.fn(async (id: string) => {
-            calls.push(id);
-
-            if (id === first.id) {
-                return firstDelete;
-            }
-
-            return checkoutState;
-        });
-        const deletion = deleteConsignmentsSequentially([first, second], deleteConsignment);
-
-        await Promise.resolve();
-        expect(calls).toEqual([first.id]);
-
-        releaseFirst?.();
-        await deletion;
-
-        expect(calls).toEqual([first.id, second.id]);
     });
 
     it('requires a fresh FFL selection after the customer step is complete', () => {

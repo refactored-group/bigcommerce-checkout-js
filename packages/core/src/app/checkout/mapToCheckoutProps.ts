@@ -54,11 +54,13 @@ export default function mapToCheckoutProps({
     const walletButtonsOnTopFlag = Boolean(checkoutUserExperienceSettings.walletButtonsOnTop);
 
     return {
+        assignItemsToAddress: checkoutService.assignItemsToAddress,
         billingAddress: data.getBillingAddress(),
         cart: data.getCart(),
         clearError: checkoutService.clearError,
         consignments: data.getConsignments(),
         deleteConsignment: checkoutService.deleteConsignment,
+        getCheckoutState: () => checkoutService.getState(),
         hasCartChanged: submitOrderError && submitOrderError.type === 'cart_changed', // TODO: Need to clear the error once it's displayed
         isGuestEnabled,
         isLoadingCheckout: statuses.isLoadingCheckout(),
@@ -80,5 +82,6 @@ export default function mapToCheckoutProps({
         }),
         subscribeToLogin: subscribeToLoginSelector({ checkoutService, checkoutState }),
         steps: data.getCheckout() ? getCheckoutStepStatuses(checkoutState) : EMPTY_ARRAY,
+        unassignItemsToAddress: checkoutService.unassignItemsToAddress,
     };
 }

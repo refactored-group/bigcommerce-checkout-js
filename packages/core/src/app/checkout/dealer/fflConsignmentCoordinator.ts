@@ -1,0 +1,363 @@
+import {
+  Address,
+  AddressRequestBody,
+  Cart,
+  CheckoutSelectors,
+  Consignment,
+  ConsignmentAssignmentRequestBody,
+} from '@bigcommerce/checkout-sdk';
+import { isEqual } from 'lodash';
+
+export interface FflDestinationAssignment {
+  address: AddressRequestBody;
+  itemIds: string[];
+}
+
+export interface FflReconciliationPlan {
+  assignments: FflDestinationAssignment[];
+  cartId: string;
+  unassignedItemIds: string[];
+}
+
+export type FflCoordinatorResult =
+  | { status: 'fulfilled'; checkoutState: CheckoutSelectors }
+  | { status: 'superseded' }
+  | {
+      status: 'failed';
+      kind: 'assign' | 'unassign' | 'internal';
+      error: unknown;
+    };
+
+export interface FflConsignmentCoordinator {
+  reconcile(plan: FflReconciliationPlan): Promise<FflCoordinatorResult>;
+  clearAll(cartId: string): Promise<FflCoordinatorResult>;
+  dispose(): void;
+}
+
+interface FflConsignmentCoordinatorDependencies {
+  assignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
+  deleteConsignment(consignmentId: string): Promise<CheckoutSelectors>;
+  getState(): CheckoutSelectors;
+  unassignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
+}
+
+interface FflCheckoutSnapshot {
+  cart: Cart;
+  checkoutState: CheckoutSelectors;
+  consignments: Consignment[];
+}
+
+const normalizeDestinationAddress = (address: Partial<Address>) => ({
+  firstName: address.firstName,
+  lastName: address.lastName,
+  company: address.company,
+  address1: address.address1,
+  address2: address.address2,
+  city: address.city,
+  stateOrProvince: address.stateOrProvince,
+  countryCode: address.countryCode,
+  postalCode: address.postalCode,
+  phone: address.phone,
+  customFields: address.customFields?.length ? address.customFields : undefined,
+});
+
+export const isSameConsignmentDestination = (
+  addressA?: Partial<Address>,
+  addressB?: Partial<Address>,
+): boolean => {
+  if (!addressA || !addressB) {
+    return false;
+  }
+
+  const { stateOrProvince: _stateA, ...normalizedAddressA } = normalizeDestinationAddress(addressA);
+  const { stateOrProvince: _stateB, ...normalizedAddressB } = normalizeDestinationAddress(addressB);
+  const hasStateCodes = Boolean(addressA.stateOrProvinceCode && addressB.stateOrProvinceCode);
+  const isSameState = hasStateCodes
+    ? addressA.stateOrProvinceCode === addressB.stateOrProvinceCode
+    : addressA.stateOrProvince === addressB.stateOrProvince;
+
+  return isSameState && isEqual(normalizedAddressA, normalizedAddressB);
+};
+
+const getCheckoutSnapshot = (
+  checkoutState: CheckoutSelectors,
+  cartId: string,
+): FflCheckoutSnapshot => {
+  const cart = checkoutState?.data?.getCart?.();
+  const checkout = checkoutState?.data?.getCheckout?.();
+
+  if (!cart || !checkout || cart.id !== cartId || checkout.id !== cartId) {
+    throw new Error('BigCommerce checkout state does not match the active cart');
+  }
+
+  return {
+    cart,
+    checkoutState,
+    consignments: checkoutState.data.getConsignments?.() || [],
+  };
+};
+
+const getPhysicalItemsById = (cart: Cart) =>
+  new Map(cart.lineItems.physicalItems.map((item) => [String(item.id), item]));
+
+const getActiveItemIds = (itemIds: string[], cart: Cart): string[] => {
+  const physicalItemsById = getPhysicalItemsById(cart);
+
+  return itemIds.filter((itemId) => physicalItemsById.has(itemId));
+};
+
+const getLineItems = (itemIds: string[], cart: Cart) => {
+  const physicalItemsById = getPhysicalItemsById(cart);
+
+  return itemIds.flatMap((itemId) => {
+    const item = physicalItemsById.get(itemId);
+
+    return item ? [{ itemId, quantity: item.quantity }] : [];
+  });
+};
+
+const getItemOwners = (consignments: Consignment[], itemId: string): Consignment[] =>
+  consignments.filter((consignment) =>
+    consignment.lineItemIds.some((lineItemId) => String(lineItemId) === itemId),
+  );
+
+const getCanonicalAssignmentAddress = (
+  assignment: FflDestinationAssignment,
+  consignments: Consignment[],
+): AddressRequestBody => {
+  const equivalentConsignments = consignments.filter((consignment) =>
+    isSameConsignmentDestination(consignment.shippingAddress, assignment.address),
+  );
+
+  if (!equivalentConsignments.length) {
+    return assignment.address;
+  }
+
+  const requestedItemIds = new Set(assignment.itemIds);
+  const canonicalConsignment = equivalentConsignments.reduce((best, candidate) => {
+    const bestMatches = best.lineItemIds.filter((itemId) => requestedItemIds.has(itemId)).length;
+    const candidateMatches = candidate.lineItemIds.filter((itemId) =>
+      requestedItemIds.has(itemId),
+    ).length;
+
+    return candidateMatches > bestMatches ? candidate : best;
+  });
+
+  return canonicalConsignment.shippingAddress as AddressRequestBody;
+};
+
+const getMissingAssignmentItemIds = (
+  assignment: FflDestinationAssignment,
+  snapshot: FflCheckoutSnapshot,
+): string[] =>
+  getActiveItemIds(assignment.itemIds, snapshot.cart).filter((itemId) => {
+    const owners = getItemOwners(snapshot.consignments, itemId);
+
+    return !owners.some((owner) =>
+      isSameConsignmentDestination(owner.shippingAddress, assignment.address),
+    );
+  });
+
+const validatePlan = (plan: FflReconciliationPlan): void => {
+  const seenItemIds = new Set<string>();
+  const itemGroups = [...plan.assignments.map(({ itemIds }) => itemIds), plan.unassignedItemIds];
+
+  for (const itemIds of itemGroups) {
+    for (const itemId of itemIds) {
+      if (seenItemIds.has(itemId)) {
+        throw new Error(`FFL reconciliation plan assigns item ${itemId} more than once`);
+      }
+
+      seenItemIds.add(itemId);
+    }
+  }
+};
+
+const verifyAssignments = (
+  assignments: FflDestinationAssignment[],
+  snapshot: FflCheckoutSnapshot,
+): boolean =>
+  assignments.every((assignment) =>
+    getActiveItemIds(assignment.itemIds, snapshot.cart).every((itemId) => {
+      const owners = getItemOwners(snapshot.consignments, itemId);
+
+      return (
+        owners.length === 1 &&
+        isSameConsignmentDestination(owners[0].shippingAddress, assignment.address)
+      );
+    }),
+  );
+
+const verifyUnassignedItems = (itemIds: string[], snapshot: FflCheckoutSnapshot): boolean =>
+  getActiveItemIds(itemIds, snapshot.cart).every(
+    (itemId) => getItemOwners(snapshot.consignments, itemId).length === 0,
+  );
+
+export const createFflConsignmentCoordinator = (
+  dependencies: FflConsignmentCoordinatorDependencies,
+): FflConsignmentCoordinator => {
+  let disposed = false;
+  let generation = 0;
+  let queue: Promise<void> = Promise.resolve();
+
+  const isSuperseded = (requestGeneration: number): boolean =>
+    disposed || requestGeneration !== generation;
+
+  const schedule = (
+    operation: (requestGeneration: number) => Promise<FflCoordinatorResult>,
+  ): Promise<FflCoordinatorResult> => {
+    const requestGeneration = ++generation;
+    const result = queue.then(() =>
+      isSuperseded(requestGeneration)
+        ? Promise.resolve<FflCoordinatorResult>({ status: 'superseded' })
+        : operation(requestGeneration),
+    );
+
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return result;
+  };
+
+  const reconcile = (plan: FflReconciliationPlan): Promise<FflCoordinatorResult> =>
+    schedule(async (requestGeneration) => {
+      let snapshot: FflCheckoutSnapshot;
+
+      try {
+        validatePlan(plan);
+        snapshot = getCheckoutSnapshot(dependencies.getState(), plan.cartId);
+      } catch (error) {
+        return isSuperseded(requestGeneration)
+          ? { status: 'superseded' }
+          : { status: 'failed', kind: 'internal', error };
+      }
+
+      for (const assignment of plan.assignments) {
+        const missingItemIds = getMissingAssignmentItemIds(assignment, snapshot);
+
+        if (!missingItemIds.length) {
+          continue;
+        }
+
+        const address = getCanonicalAssignmentAddress(assignment, snapshot.consignments);
+
+        try {
+          const checkoutState = await dependencies.assignItemsToAddress({
+            address,
+            lineItems: getLineItems(missingItemIds, snapshot.cart),
+          });
+
+          if (isSuperseded(requestGeneration)) {
+            return { status: 'superseded' };
+          }
+
+          snapshot = getCheckoutSnapshot(checkoutState, plan.cartId);
+        } catch (error) {
+          return isSuperseded(requestGeneration)
+            ? { status: 'superseded' }
+            : { status: 'failed', kind: 'assign', error };
+        }
+      }
+
+      for (const consignment of snapshot.consignments) {
+        const assignedItemIds = getActiveItemIds(plan.unassignedItemIds, snapshot.cart).filter(
+          (itemId) => consignment.lineItemIds.some((lineItemId) => String(lineItemId) === itemId),
+        );
+
+        if (!assignedItemIds.length) {
+          continue;
+        }
+
+        try {
+          const checkoutState = await dependencies.unassignItemsToAddress({
+            address: consignment.shippingAddress as AddressRequestBody,
+            lineItems: getLineItems(assignedItemIds, snapshot.cart),
+          });
+
+          if (isSuperseded(requestGeneration)) {
+            return { status: 'superseded' };
+          }
+
+          snapshot = getCheckoutSnapshot(checkoutState, plan.cartId);
+        } catch (error) {
+          return isSuperseded(requestGeneration)
+            ? { status: 'superseded' }
+            : { status: 'failed', kind: 'unassign', error };
+        }
+      }
+
+      if (!verifyAssignments(plan.assignments, snapshot)) {
+        return {
+          status: 'failed',
+          kind: 'assign',
+          error: new Error('BigCommerce did not fulfill the requested FFL assignments'),
+        };
+      }
+
+      if (!verifyUnassignedItems(plan.unassignedItemIds, snapshot)) {
+        return {
+          status: 'failed',
+          kind: 'unassign',
+          error: new Error('BigCommerce did not unassign the requested FFL items'),
+        };
+      }
+
+      return { status: 'fulfilled', checkoutState: snapshot.checkoutState };
+    });
+
+  const clearAll = (cartId: string): Promise<FflCoordinatorResult> =>
+    schedule(async (requestGeneration) => {
+      let snapshot: FflCheckoutSnapshot;
+
+      try {
+        snapshot = getCheckoutSnapshot(dependencies.getState(), cartId);
+      } catch (error) {
+        return isSuperseded(requestGeneration)
+          ? { status: 'superseded' }
+          : { status: 'failed', kind: 'internal', error };
+      }
+
+      const consignmentIds = snapshot.consignments.map(({ id }) => id);
+
+      for (const consignmentId of consignmentIds) {
+        if (!snapshot.consignments.some(({ id }) => id === consignmentId)) {
+          continue;
+        }
+
+        try {
+          const checkoutState = await dependencies.deleteConsignment(consignmentId);
+
+          if (isSuperseded(requestGeneration)) {
+            return { status: 'superseded' };
+          }
+
+          snapshot = getCheckoutSnapshot(checkoutState, cartId);
+        } catch (error) {
+          return isSuperseded(requestGeneration)
+            ? { status: 'superseded' }
+            : { status: 'failed', kind: 'unassign', error };
+        }
+      }
+
+      if (snapshot.consignments.length) {
+        return {
+          status: 'failed',
+          kind: 'unassign',
+          error: new Error('BigCommerce did not clear every consignment'),
+        };
+      }
+
+      return { status: 'fulfilled', checkoutState: snapshot.checkoutState };
+    });
+
+  return {
+    reconcile,
+    clearAll,
+    dispose: () => {
+      disposed = true;
+      generation += 1;
+    },
+  };
+};
