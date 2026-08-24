@@ -23,6 +23,7 @@ const customerAddress = {
   lastName: 'Doe',
   phone: '5555550100',
   postalCode: '78701',
+  shouldSaveAddress: false,
   stateOrProvince: 'Texas',
   stateOrProvinceCode: 'TX',
 } as Address;
@@ -187,7 +188,7 @@ describe('fflConsignmentCoordinator', () => {
       {
         id: 'customer',
         lineItemIds: ['ammo-1'],
-        shippingAddress: customerAddress,
+        shippingAddress: { ...customerAddress, shouldSaveAddress: true },
       } as Consignment,
     ]);
     const coordinator = createFflConsignmentCoordinator(sdk);
@@ -202,11 +203,16 @@ describe('fflConsignmentCoordinator', () => {
 
   it('reuses BigCommerce normalized address data when assigning a missing item', async () => {
     const sdk = createStatefulSdk();
+    const canonicalCustomerAddress = {
+      ...customerAddress,
+      shouldSaveAddress: true,
+    } as Address;
+
     sdk.setConsignments([
       {
         id: 'customer',
         lineItemIds: ['regular-1'],
-        shippingAddress: customerAddress,
+        shippingAddress: canonicalCustomerAddress,
       } as Consignment,
       {
         id: 'dealer',
@@ -226,7 +232,7 @@ describe('fflConsignmentCoordinator', () => {
     ).resolves.toMatchObject({ status: 'fulfilled' });
 
     expect(sdk.assignItemsToAddress).toHaveBeenCalledWith({
-      address: customerAddress,
+      address: { ...canonicalCustomerAddress, shouldSaveAddress: false },
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
     });
     expect(sdk.consignments).toHaveLength(1);
@@ -288,11 +294,16 @@ describe('fflConsignmentCoordinator', () => {
 
   it('uses native unassignment to preserve ordinary items in a mixed consignment', async () => {
     const sdk = createStatefulSdk();
+    const persistedCustomerAddress = {
+      ...customerAddress,
+      shouldSaveAddress: true,
+    } as Address;
+
     sdk.setConsignments([
       {
         id: 'customer',
         lineItemIds: ['ammo-1', 'regular-1'],
-        shippingAddress: customerAddress,
+        shippingAddress: persistedCustomerAddress,
       } as Consignment,
     ]);
     const coordinator = createFflConsignmentCoordinator(sdk);
@@ -306,7 +317,7 @@ describe('fflConsignmentCoordinator', () => {
     ).resolves.toMatchObject({ status: 'fulfilled' });
 
     expect(sdk.unassignItemsToAddress).toHaveBeenCalledWith({
-      address: customerAddress,
+      address: { ...persistedCustomerAddress, shouldSaveAddress: false },
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
     });
     expect(sdk.ownerAddresses('ammo-1')).toEqual([]);

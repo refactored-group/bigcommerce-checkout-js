@@ -18,6 +18,7 @@ const customerAddress = {
   lastName: 'Doe',
   phone: '5555550100',
   postalCode: '78701',
+  shouldSaveAddress: false,
   stateOrProvince: 'Texas',
   stateOrProvinceCode: 'TX',
 } as Address;
@@ -351,7 +352,11 @@ describe('DealerShipping ammo reconciliation', () => {
   });
 
   it('routes a firearm-only cart through the coordinator', async () => {
-    const explicitDealer = { ...dealerAddress, fflID: 'ffl-firearm-only' };
+    const explicitDealer = {
+      ...dealerAddress,
+      fflID: 'ffl-firearm-only',
+      shouldSaveAddress: true,
+    };
     const { props, subject } = makeSubject(false, (nextProps) => {
       nextProps.cart.lineItems.physicalItems = [
         { addedByPromotion: false, id: 'gun-1', parentId: null, quantity: 1 },
@@ -364,12 +369,19 @@ describe('DealerShipping ammo reconciliation', () => {
     await subject.selectDealer(explicitDealer);
 
     expect(props.assignItem).toHaveBeenCalledWith({
-      address: expect.objectContaining({ company: 'Example FFL', fflID: 'ffl-firearm-only' }),
+      address: expect.objectContaining({
+        company: 'Example FFL',
+        fflID: 'ffl-firearm-only',
+        shouldSaveAddress: false,
+      }),
       lineItems: [{ itemId: 'gun-1', quantity: 1 }],
     });
+    expect(subject.state.selectedDealer).toEqual(
+      expect.objectContaining({ fflID: 'ffl-firearm-only', shouldSaveAddress: false }),
+    );
     expect(model.ownerIds('gun-1')).toHaveLength(1);
     expect(props.setSelectedFFL).toHaveBeenCalledWith(
-      expect.objectContaining({ fflID: 'ffl-firearm-only' }),
+      expect.objectContaining({ fflID: 'ffl-firearm-only', shouldSaveAddress: false }),
     );
   });
 
@@ -1725,7 +1737,7 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(props.deleteConsignment).not.toHaveBeenCalled();
     expect(props.assignItem).toHaveBeenCalledTimes(1);
     expect(props.assignItem).toHaveBeenCalledWith({
-      address: { ...customerAddress, shouldSaveAddress: true },
+      address: { ...customerAddress, shouldSaveAddress: false },
       lineItems: [{ itemId: 'ammo-1', quantity: 2 }],
     });
     expect(props.createCustomerAddress).not.toHaveBeenCalled();

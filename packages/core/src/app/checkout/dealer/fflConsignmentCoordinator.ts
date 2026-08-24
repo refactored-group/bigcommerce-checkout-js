@@ -47,6 +47,13 @@ interface FflCheckoutSnapshot {
   consignments: Consignment[];
 }
 
+const preventAddressBookPersistence = (
+  address: AddressRequestBody,
+): AddressRequestBody & { shouldSaveAddress: false } => ({
+  ...address,
+  shouldSaveAddress: false,
+});
+
 const normalizeDestinationAddress = (address: Partial<Address>) => ({
   firstName: address.firstName,
   lastName: address.lastName,
@@ -241,7 +248,9 @@ export const createFflConsignmentCoordinator = (
           continue;
         }
 
-        const address = getCanonicalAssignmentAddress(assignment, snapshot.consignments);
+        const address = preventAddressBookPersistence(
+          getCanonicalAssignmentAddress(assignment, snapshot.consignments),
+        );
 
         try {
           const checkoutState = await dependencies.assignItemsToAddress({
@@ -272,7 +281,9 @@ export const createFflConsignmentCoordinator = (
 
         try {
           const checkoutState = await dependencies.unassignItemsToAddress({
-            address: consignment.shippingAddress as AddressRequestBody,
+            address: preventAddressBookPersistence(
+              consignment.shippingAddress as AddressRequestBody,
+            ),
             lineItems: getLineItems(assignedItemIds, snapshot.cart),
           });
 

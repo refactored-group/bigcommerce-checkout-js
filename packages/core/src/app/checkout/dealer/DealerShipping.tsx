@@ -979,6 +979,8 @@ export class DealerShipping extends React.PureComponent<
   };
 
   selectDealer: (dealer: any) => Promise<void> = (dealer: any) => {
+    const selectedDealer = { ...dealer, shouldSaveAddress: false };
+
     // API call to track dealer selection for analytics purposes
     fetch(
       `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealer.id}/select`,
@@ -1000,7 +1002,7 @@ export class DealerShipping extends React.PureComponent<
     return new Promise<void>((resolve) => {
       this.setState(
         {
-          selectedDealer: dealer,
+          selectedDealer,
           showLocator: false,
         },
         () => {
@@ -1032,6 +1034,7 @@ export class DealerShipping extends React.PureComponent<
         customFields: selectedDealer.customFields || [],
         firstName: recipientName.firstName,
         lastName: recipientName.lastName,
+        shouldSaveAddress: false,
       },
     };
   };
