@@ -14,6 +14,7 @@ import {
   CheckoutHandoffIntent,
   CheckoutHandoffPublisher,
   createCheckoutHandoffPublisher,
+  isSameCheckoutHandoffDestination,
 } from './checkoutHandoff';
 
 export interface FflDestinationAssignment {
@@ -50,6 +51,7 @@ interface FflConsignmentCoordinatorDependencies {
   getState(): CheckoutSelectors;
   handoffClient?: CheckoutHandoffClient;
   handoffPublisher?: CheckoutHandoffPublisher;
+  onHandoffError?(error: Error): void;
   refreshCheckout?(cartId: string): Promise<CheckoutSelectors>;
   unassignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
 }
@@ -240,7 +242,8 @@ export const createFflConsignmentCoordinator = (
       ? createCheckoutHandoffPublisher({
           client: dependencies.handoffClient,
           getCheckoutState: dependencies.getState,
-          matchesDestination: isSameConsignmentDestination,
+          matchesDestination: isSameCheckoutHandoffDestination,
+          onError: dependencies.onHandoffError,
           refreshCheckout: scheduleRefresh,
         })
       : undefined);

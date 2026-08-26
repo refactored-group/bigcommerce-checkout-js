@@ -131,6 +131,7 @@ const makeProps = (isGuest = false) => {
     isValid: true,
     customerMessage: '',
     navigateNextStep: jest.fn(),
+    onHandoffError: jest.fn(),
     onUnhandledError: jest.fn(),
     selectedFFL: null,
     setFFLtoOrderComments: jest.fn(),
@@ -426,6 +427,25 @@ describe('DealerShipping ammo reconciliation', () => {
       expect.stringContaining('/dealers/42/select'),
       expect.any(Object),
     );
+  });
+
+  it('reports a selected dealer that has no canonical ID without blocking checkout', () => {
+    const { props, subject } = makeSubject();
+    const dealerWithoutId = { ...dealerAddress, dealerId: undefined, id: undefined };
+
+    const intent = (subject as any).getActiveHandoffIntent(
+      dealerWithoutId,
+      committedDealerAddress,
+      [{ itemId: 'gun-1' }],
+    );
+
+    expect(intent).toBeUndefined();
+    expect(props.onHandoffError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Automatic FFL cannot correlate the selected dealer without its canonical ID',
+      }),
+    );
+    expect(props.onUnhandledError).not.toHaveBeenCalled();
   });
 
   it('routes a restricted ammo-only cart to the selected dealer', async () => {

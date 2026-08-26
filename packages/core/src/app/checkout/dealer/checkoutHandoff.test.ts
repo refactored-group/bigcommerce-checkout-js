@@ -5,8 +5,8 @@ import {
   CheckoutHandoffHttpError,
   createCheckoutHandoffClient,
   createCheckoutHandoffPublisher,
+  isSameCheckoutHandoffDestination,
 } from './checkoutHandoff';
-import { isSameConsignmentDestination } from './fflConsignmentCoordinator';
 
 const dealerAddress = {
   address1: '200 Dealer Road',
@@ -114,9 +114,99 @@ describe('checkout handoff client', () => {
           expected_revision: 3,
           operation_id: 'operation-1',
         }),
+        keepalive: true,
         method: 'PUT',
       }),
     );
+  });
+
+  it('preserves server state and retry timing on an unsuccessful response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      headers: { get: jest.fn().mockReturnValue('2') },
+      json: jest.fn().mockResolvedValue({
+        active: true,
+        consumed: false,
+        dealer_id: 41,
+        error: 'stale_revision',
+        revision: 7,
+      }),
+      ok: false,
+      status: 429,
+    }) as jest.Mock;
+    const client = createCheckoutHandoffClient('https://api.example.test');
+
+    await expect(
+      client.update(
+        { cartId: 'cart-1', storeHash: 'store-hash' },
+        {
+          active: true,
+          dealerId: 42,
+          expectedRevision: 6,
+          operationId: 'operation-1',
+        },
+      ),
+    ).rejects.toMatchObject({
+      message: 'stale_revision',
+      retryAfterMilliseconds: 2_000,
+      state: { active: true, consumed: false, dealerId: '41', revision: 7 },
+      status: 429,
+    });
+  });
+
+  it('rejects an invalid successful response instead of inventing revision state', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      headers: { get: jest.fn().mockReturnValue(null) },
+      json: jest.fn().mockRejectedValue(new SyntaxError('invalid JSON')),
+      ok: true,
+      status: 200,
+    }) as jest.Mock;
+    const client = createCheckoutHandoffClient('https://api.example.test');
+
+    await expect(client.load({ cartId: 'cart-1', storeHash: 'store-hash' })).rejects.toThrow(
+      'Automatic FFL received an invalid checkout handoff response',
+    );
+  });
+});
+
+describe('checkout handoff destination matching', () => {
+  it('matches the same dealer after BigCommerce normalizes address and recipient fields', () => {
+    expect(
+      isSameCheckoutHandoffDestination(dealerAddress, {
+        ...dealerAddress,
+        address1: '  200 dealer-road. ',
+        company: 'Appended merchant text',
+        country: 'USA',
+        countryCode: '',
+        customFields: [{ fieldId: 'field-1', fieldValue: 'ignored' }],
+        firstName: 'Different',
+        lastName: 'Recipient',
+        phone: '9999999999',
+        postalCode: '80202-1234',
+        stateOrProvince: 'Colorado',
+        stateOrProvinceCode: '',
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match a different dealer destination', () => {
+    expect(isSameCheckoutHandoffDestination(dealerAddress, otherAddress)).toBe(false);
+  });
+
+  it('preserves Unicode letters exactly like the backend canonical matcher', () => {
+    const accentedAddress = { ...dealerAddress, city: 'Can\u0303on City' };
+
+    expect(
+      isSameCheckoutHandoffDestination(accentedAddress, {
+        ...accentedAddress,
+        city: 'Ca\u00f1on City',
+      }),
+    ).toBe(true);
+    expect(
+      isSameCheckoutHandoffDestination(accentedAddress, {
+        ...accentedAddress,
+        city: 'Canon City',
+      }),
+    ).toBe(false);
   });
 });
 
@@ -137,7 +227,7 @@ describe('checkout handoff publisher', () => {
       client,
       createOperationId: jest.fn().mockReturnValue('stable-operation-id'),
       getCheckoutState: () => checkoutState,
-      matchesDestination: isSameConsignmentDestination,
+      matchesDestination: isSameCheckoutHandoffDestination,
       onError: options.onError,
       refreshCheckout: options.refreshCheckout || jest.fn().mockResolvedValue(checkoutState),
       wait: jest.fn().mockResolvedValue(undefined),
@@ -180,6 +270,27 @@ describe('checkout handoff publisher', () => {
     ]);
   });
 
+  it('does not publish an active candidate unless the confirmed item owner still matches', async () => {
+    const client = {
+      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
+      update: jest.fn(),
+    };
+    const publisher = makePublisher(client, {
+      checkoutState: makeCheckoutState(otherAddress),
+    });
+
+    publisher.configure(context);
+    publisher.publish({
+      active: true,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    await flushPromises();
+
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
   it('refreshes checkout and retries a stale selection only while that dealer is still applied', async () => {
     const staleState = { active: true, consumed: false, dealerId: '41', revision: 4 };
     const client = {
@@ -189,7 +300,20 @@ describe('checkout handoff publisher', () => {
         .mockRejectedValueOnce(new CheckoutHandoffHttpError(409, staleState))
         .mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 5 }),
     };
-    const refreshCheckout = jest.fn().mockResolvedValue(makeCheckoutState(dealerAddress));
+    const refreshCheckout = jest
+      .fn()
+      .mockRejectedValueOnce(new TypeError('checkout refresh unavailable'))
+      .mockResolvedValue(
+        makeCheckoutState({
+          ...dealerAddress,
+          address1: '200 dealer-road.',
+          company: 'Normalized company text',
+          firstName: 'Different',
+          lastName: 'Recipient',
+          phone: '9999999999',
+          postalCode: '80202-1234',
+        } as Address),
+      );
     const publisher = makePublisher(client, { refreshCheckout });
 
     publisher.configure(context);
@@ -201,6 +325,7 @@ describe('checkout handoff publisher', () => {
     });
     await flushPromises();
 
+    expect(refreshCheckout).toHaveBeenCalledTimes(2);
     expect(refreshCheckout).toHaveBeenCalledWith('cart-1');
     expect(client.update).toHaveBeenNthCalledWith(
       2,
@@ -340,5 +465,169 @@ describe('checkout handoff publisher', () => {
 
     expect(client.update).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('reports an exhausted terminal write without turning it into a shopper error', async () => {
+    const error = new CheckoutHandoffHttpError(422, undefined, undefined, 'dealer_not_selectable');
+    const onError = jest.fn();
+    const client = {
+      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
+      update: jest.fn().mockRejectedValue(error),
+    };
+    const publisher = makePublisher(client, { onError });
+
+    publisher.configure(context);
+    publisher.publish({
+      active: true,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    await flushPromises();
+
+    expect(onError).toHaveBeenCalledWith(error);
+  });
+
+  it('reports an exhausted stale-checkout refresh instead of swallowing it', async () => {
+    const refreshError = new TypeError('checkout refresh unavailable');
+    const onError = jest.fn();
+    const client = {
+      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
+      update: jest.fn().mockRejectedValue(
+        new CheckoutHandoffHttpError(409, {
+          active: true,
+          consumed: false,
+          dealerId: '41',
+          revision: 3,
+        }),
+      ),
+    };
+    const refreshCheckout = jest.fn().mockRejectedValue(refreshError);
+    const publisher = makePublisher(client, { onError, refreshCheckout });
+
+    publisher.configure(context);
+    publisher.publish({
+      active: true,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    await flushPromises(50);
+
+    expect(refreshCheckout).toHaveBeenCalledTimes(4);
+    expect(client.update).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(refreshError);
+  });
+
+  it('reports repeated stale conflicts after the bounded retry limit', async () => {
+    const staleError = new CheckoutHandoffHttpError(409, {
+      active: true,
+      consumed: false,
+      dealerId: '41',
+      revision: 3,
+    });
+    const onError = jest.fn();
+    const client = {
+      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
+      update: jest.fn().mockRejectedValue(staleError),
+    };
+    const refreshCheckout = jest.fn().mockResolvedValue(makeCheckoutState(dealerAddress));
+    const publisher = makePublisher(client, { onError, refreshCheckout });
+
+    publisher.configure(context);
+    publisher.publish({
+      active: true,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    await flushPromises(50);
+
+    expect(client.update).toHaveBeenCalledTimes(3);
+    expect(refreshCheckout).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledWith(staleError);
+  });
+
+  it('reports a shared initialization failure only once for the active publication', async () => {
+    const loadError = new CheckoutHandoffHttpError(422, undefined, undefined, 'invalid_store');
+    const onError = jest.fn();
+    const client = {
+      load: jest.fn().mockRejectedValue(loadError),
+      update: jest.fn(),
+    };
+    const publisher = makePublisher(client, { onError });
+
+    publisher.configure(context);
+    publisher.publish({
+      active: true,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    await flushPromises();
+
+    expect(client.load).toHaveBeenCalledTimes(1);
+    expect(client.update).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(loadError);
+  });
+
+  it('does not let a late stale response poison a newer configuration', async () => {
+    let releaseOldUpdate: (error: unknown) => void = () => undefined;
+    let markOldUpdateStarted: () => void = () => undefined;
+    const oldUpdateStarted = new Promise<void>((resolve) => {
+      markOldUpdateStarted = resolve;
+    });
+    const oldUpdatePending = new Promise((_resolve, reject) => {
+      releaseOldUpdate = reject;
+    });
+    const newerContext = { ...context, storeHash: 'new-store-hash' };
+    const client = {
+      load: jest
+        .fn()
+        .mockResolvedValueOnce({ active: false, consumed: false, revision: 1 })
+        .mockResolvedValueOnce({ active: false, consumed: false, revision: 7 }),
+      update: jest
+        .fn()
+        .mockImplementationOnce(() => {
+          markOldUpdateStarted();
+          return oldUpdatePending;
+        })
+        .mockResolvedValueOnce({ active: true, consumed: false, dealerId: '42', revision: 8 }),
+    };
+    const publisher = makePublisher(client);
+
+    publisher.configure(context);
+    publisher.publish({
+      active: true,
+      dealerId: 41,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    await oldUpdateStarted;
+
+    publisher.configure(newerContext);
+    await flushPromises();
+    publisher.publish({
+      active: true,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    });
+    releaseOldUpdate(
+      new CheckoutHandoffHttpError(409, {
+        active: true,
+        consumed: false,
+        dealerId: '41',
+        revision: 99,
+      }),
+    );
+    await flushPromises();
+
+    expect(client.update).toHaveBeenCalledTimes(2);
+    expect(client.update).toHaveBeenLastCalledWith(
+      newerContext,
+      expect.objectContaining({ dealerId: 42, expectedRevision: 7 }),
+    );
   });
 });

@@ -47,6 +47,7 @@ const makeCheckout = () => {
     clearError: jest.fn(),
     consignments,
     deleteConsignment,
+    errorLogger: { log: jest.fn() },
     getCheckoutState: selectors,
     loadShippingAddressFields: jest.fn().mockResolvedValue(selectors()),
     loadShippingOptions: jest.fn().mockResolvedValue(selectors()),
@@ -75,7 +76,7 @@ const makeCheckout = () => {
 
 describe('Checkout FFL lifecycle', () => {
   it('owns one coordinator and an identity-scoped confirmed route across Shipping renders', () => {
-    const { checkout } = makeCheckout();
+    const { checkout, props } = makeCheckout();
     const coordinator = (checkout as any).fflConsignmentCoordinator;
     (checkout as any).customerIdentityKey = 'guest:0';
     (checkout as any).state = {
@@ -105,6 +106,9 @@ describe('Checkout FFL lifecycle', () => {
 
     expect(firstDealer.props.fflConsignmentCoordinator).toBe(coordinator);
     expect(secondDealer.props.fflConsignmentCoordinator).toBe(coordinator);
+    const handoffError = new Error('handoff failed');
+    firstDealer.props.onHandoffError(handoffError);
+    expect(props.errorLogger.log).toHaveBeenCalledWith(handoffError);
     expect(checkout.state.confirmedAmmoRoutingSession).toEqual(
       expect.objectContaining({ customerIdentityKey: 'guest:0', stateCode: 'TX' }),
     );

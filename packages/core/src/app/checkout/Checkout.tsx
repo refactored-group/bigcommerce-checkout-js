@@ -255,6 +255,7 @@ export class Checkout extends Component<
             deleteConsignment: this.props.deleteConsignment,
             getState: this.props.getCheckoutState,
             handoffClient: createCheckoutHandoffClient(`https://${process.env.HOST}`),
+            onHandoffError: (error) => this.props.errorLogger.log(error),
             refreshCheckout: (cartId) =>
                 this.props.loadCheckout(cartId, this.getCheckoutLoadOptions()),
             unassignItemsToAddress: this.props.unassignItemsToAddress,
@@ -768,6 +769,7 @@ export class Checkout extends Component<
                         isMultiShippingMode={ true }
                         navigateNextStep={ this.handleShippingNextStep }
                         onCreateAccount={ this.handleShippingCreateAccount }
+                        onHandoffError={ (error) => this.props.errorLogger.log(error) }
                         onSignIn={ this.handleShippingSignIn }
                         onToggleMultiShipping={ this.handleToggleMultiShipping }
                         onUnhandledError={ this.handleUnhandledError }

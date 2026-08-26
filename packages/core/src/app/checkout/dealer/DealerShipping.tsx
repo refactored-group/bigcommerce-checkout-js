@@ -187,6 +187,7 @@ interface DealerProps {
   onReady: any;
   onSignIn: any;
   onToggleMultiShipping: any;
+  onHandoffError(error: Error): void;
   onUnhandledError: any;
   isValid?: any;
   addresses: any;
@@ -914,7 +915,9 @@ export class DealerShipping extends React.PureComponent<
   }
 
   private getDealerId(selectedDealer = this.state.selectedDealer): string | number | undefined {
-    return selectedDealer?.dealerId ?? selectedDealer?.id;
+    const dealerId = selectedDealer?.dealerId ?? selectedDealer?.id;
+
+    return dealerId === null || dealerId === '' ? undefined : dealerId;
   }
 
   private getActiveHandoffIntent(
@@ -924,8 +927,10 @@ export class DealerShipping extends React.PureComponent<
   ): CheckoutHandoffIntent | undefined {
     const dealerId = this.getDealerId(selectedDealer);
 
-    if (dealerId === undefined || dealerId === null || dealerId === '') {
-      console.error('Automatic FFL cannot correlate the selected dealer without its canonical ID');
+    if (dealerId === undefined) {
+      this.props.onHandoffError(
+        new Error('Automatic FFL cannot correlate the selected dealer without its canonical ID'),
+      );
       return undefined;
     }
 

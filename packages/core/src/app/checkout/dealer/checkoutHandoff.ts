@@ -46,7 +46,7 @@ interface CheckoutHandoffPublisherDependencies {
   getCheckoutState(): CheckoutSelectors;
   matchesDestination(addressA?: Partial<Address>, addressB?: Partial<Address>): boolean;
   maxAttempts?: number;
-  onError?(error: unknown): void;
+  onError?(error: Error): void;
   refreshCheckout(cartId: string): Promise<CheckoutSelectors>;
   wait?(milliseconds: number): Promise<void>;
 }
@@ -97,6 +97,127 @@ const parseState = (body: CheckoutHandoffResponseBody): CheckoutHandoffState | u
         : undefined,
     revision: body.revision,
   };
+};
+
+const usStateCodes: Record<string, string> = {
+  ALABAMA: 'AL',
+  ALASKA: 'AK',
+  ARIZONA: 'AZ',
+  ARKANSAS: 'AR',
+  CALIFORNIA: 'CA',
+  COLORADO: 'CO',
+  CONNECTICUT: 'CT',
+  DELAWARE: 'DE',
+  'DISTRICT OF COLUMBIA': 'DC',
+  FLORIDA: 'FL',
+  GEORGIA: 'GA',
+  HAWAII: 'HI',
+  IDAHO: 'ID',
+  ILLINOIS: 'IL',
+  INDIANA: 'IN',
+  IOWA: 'IA',
+  KANSAS: 'KS',
+  KENTUCKY: 'KY',
+  LOUISIANA: 'LA',
+  MAINE: 'ME',
+  MARYLAND: 'MD',
+  MASSACHUSETTS: 'MA',
+  MICHIGAN: 'MI',
+  MINNESOTA: 'MN',
+  MISSISSIPPI: 'MS',
+  MISSOURI: 'MO',
+  MONTANA: 'MT',
+  NEBRASKA: 'NE',
+  NEVADA: 'NV',
+  'NEW HAMPSHIRE': 'NH',
+  'NEW JERSEY': 'NJ',
+  'NEW MEXICO': 'NM',
+  'NEW YORK': 'NY',
+  'NORTH CAROLINA': 'NC',
+  'NORTH DAKOTA': 'ND',
+  OHIO: 'OH',
+  OKLAHOMA: 'OK',
+  OREGON: 'OR',
+  PENNSYLVANIA: 'PA',
+  'RHODE ISLAND': 'RI',
+  'SOUTH CAROLINA': 'SC',
+  'SOUTH DAKOTA': 'SD',
+  TENNESSEE: 'TN',
+  TEXAS: 'TX',
+  UTAH: 'UT',
+  VERMONT: 'VT',
+  VIRGINIA: 'VA',
+  WASHINGTON: 'WA',
+  'WEST VIRGINIA': 'WV',
+  WISCONSIN: 'WI',
+  WYOMING: 'WY',
+};
+
+const normalizeHandoffText = (value: unknown): string =>
+  (value === undefined || value === null ? '' : String(value))
+    .normalize('NFC')
+    .toUpperCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+
+const normalizeCountry = (address: Partial<Address>): string => {
+  const country = normalizeHandoffText(address.countryCode || address.country);
+
+  return ['US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA'].includes(country)
+    ? 'US'
+    : country.replace(/ /g, '');
+};
+
+const normalizeState = (address: Partial<Address>): string => {
+  const state = normalizeHandoffText(address.stateOrProvinceCode || address.stateOrProvince);
+
+  // Keep this candidate-only comparison aligned with the backend's canonical
+  // BigCommerce destination normalization. Final order proof still belongs to
+  // the backend and is never inferred from this browser comparison.
+  return usStateCodes[state] || state;
+};
+
+const normalizePostalCode = (address: Partial<Address>, country: string): string => {
+  const postalCode = normalizeHandoffText(address.postalCode);
+
+  if (country === 'US') {
+    const digits = postalCode.replace(/[^0-9]/g, '');
+
+    return digits.length >= 5 ? digits.slice(0, 5) : digits;
+  }
+
+  return postalCode.replace(/ /g, '');
+};
+
+const normalizeHandoffDestination = (address: Partial<Address>) => {
+  const country = normalizeCountry(address);
+
+  return {
+    address1: normalizeHandoffText(address.address1),
+    address2: normalizeHandoffText(address.address2),
+    city: normalizeHandoffText(address.city),
+    country,
+    postalCode: normalizePostalCode(address, country),
+    state: normalizeState(address),
+  };
+};
+
+export const isSameCheckoutHandoffDestination = (
+  addressA?: Partial<Address>,
+  addressB?: Partial<Address>,
+): boolean => {
+  if (!addressA || !addressB) {
+    return false;
+  }
+
+  const destinationA = normalizeHandoffDestination(addressA);
+  const destinationB = normalizeHandoffDestination(addressB);
+
+  return Object.keys(destinationA).every(
+    (field) =>
+      destinationA[field as keyof typeof destinationA] ===
+      destinationB[field as keyof typeof destinationB],
+  );
 };
 
 const parseRetryAfterMilliseconds = (response: Response): number | undefined => {
@@ -167,6 +288,7 @@ export const createCheckoutHandoffClient = (baseUrl: string): CheckoutHandoffCli
           expected_revision: update.expectedRevision,
           operation_id: update.operationId,
         }),
+        keepalive: true,
         method: 'PUT',
       }),
   };
@@ -193,6 +315,11 @@ const createOperationId = (): string => {
 
 const isRetryable = (error: unknown): boolean =>
   !(error instanceof CheckoutHandoffHttpError) || error.status === 429 || error.status >= 500;
+
+const toError = (error: unknown): Error =>
+  error instanceof Error
+    ? error
+    : new Error(`Automatic FFL checkout handoff failed: ${String(error)}`);
 
 const hasMatchingConsignment = (
   checkoutState: CheckoutSelectors,
@@ -237,7 +364,7 @@ export const createCheckoutHandoffPublisher = (
   const nextOperationId = dependencies.createOperationId ?? createOperationId;
   const reportError =
     dependencies.onError ??
-    ((error: unknown) => {
+    ((error: Error) => {
       // Attribution reliability must never block checkout. Operational failures
       // remain visible to browser monitoring without becoming shopper errors.
       console.error('Automatic FFL could not synchronize the checkout handoff', error);
@@ -321,9 +448,26 @@ export const createCheckoutHandoffPublisher = (
     configuration: number,
     publication: number,
   ): Promise<boolean> => {
-    const checkoutState = await dependencies.refreshCheckout(activeContext.cartId);
+    let checkoutState: CheckoutSelectors | undefined;
 
-    if (!isCurrent(configuration, publication)) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (!isCurrent(configuration, publication)) {
+        return false;
+      }
+
+      try {
+        checkoutState = await dependencies.refreshCheckout(activeContext.cartId);
+        break;
+      } catch (error) {
+        if (!isRetryable(error) || attempt === maxAttempts - 1) {
+          throw error;
+        }
+
+        await wait(retryDelay(attempt, error));
+      }
+    }
+
+    if (!checkoutState || !isCurrent(configuration, publication)) {
       return false;
     }
 
@@ -374,7 +518,7 @@ export const createCheckoutHandoffPublisher = (
         await initialize(configuration);
       } catch (error) {
         if (isCurrent(configuration, publication)) {
-          reportError(error);
+          reportError(toError(error));
         }
 
         return;
@@ -423,6 +567,10 @@ export const createCheckoutHandoffPublisher = (
         } catch (error) {
           lastError = error;
 
+          if (!isCurrent(configuration)) {
+            return;
+          }
+
           if (
             error instanceof CheckoutHandoffHttpError &&
             error.status === 409 &&
@@ -437,9 +585,16 @@ export const createCheckoutHandoffPublisher = (
             consumed = error.state.consumed;
             staleRetries += 1;
 
+            if (consumed || !isCurrent(configuration, publication)) {
+              return;
+            }
+
+            if (staleRetries > 2) {
+              reportError(toError(error));
+              return;
+            }
+
             if (
-              consumed ||
-              staleRetries > 2 ||
               !(await canRetryStaleIntent(
                 intent,
                 error.state,
@@ -454,6 +609,10 @@ export const createCheckoutHandoffPublisher = (
             continue;
           }
 
+          if (!isCurrent(configuration, publication)) {
+            return;
+          }
+
           if (!isRetryable(error) || attempt === maxAttempts - 1) {
             break;
           }
@@ -463,12 +622,16 @@ export const createCheckoutHandoffPublisher = (
       }
 
       if (isCurrent(configuration, publication)) {
-        reportError(lastError);
+        reportError(toError(lastError));
       }
     };
 
     const result = queue.then(operation);
-    queue = result.catch(() => undefined);
+    queue = result.catch((error) => {
+      if (isCurrent(configuration, publication)) {
+        reportError(toError(error));
+      }
+    });
   };
 
   return {
@@ -490,11 +653,10 @@ export const createCheckoutHandoffPublisher = (
       revision = undefined;
 
       const configuration = configurationGeneration;
-      void initialize(configuration).catch((error) => {
-        if (isCurrent(configuration)) {
-          reportError(error);
-        }
-      });
+      // Initialization is speculative on checkout load. A real publication
+      // retries it and owns error reporting, which avoids duplicate alerts when
+      // configure() and publish() share the same in-flight request.
+      void initialize(configuration).catch(() => undefined);
     },
     dispose: () => {
       disposed = true;
