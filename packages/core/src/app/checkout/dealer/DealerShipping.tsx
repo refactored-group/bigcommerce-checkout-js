@@ -45,6 +45,7 @@ import { Form } from '../../ui/form';
 import getShippableLineItems from './getShippableLineItems';
 import CountryDropdown from './CountryDropdown';
 import CustomerNameFields from './CustomerNameFields';
+import { CheckoutHandoffIntent } from './checkoutHandoff';
 import {
   FflConsignmentCoordinator,
   FflCoordinatorResult,
@@ -873,6 +874,7 @@ export class DealerShipping extends React.PureComponent<
       lineItems: Array<{ itemId: string; quantity: number }>;
     }>,
     unassignedLineItems: Array<{ itemId: string; quantity: number }> = [],
+    handoff?: CheckoutHandoffIntent,
   ): Promise<FflCoordinatorResult> => {
     if (!this.isUnmounted) {
       this.setState({ ammoRoutingError: false, isUpdatingShippingData: true });
@@ -884,6 +886,7 @@ export class DealerShipping extends React.PureComponent<
         itemIds: lineItems.map(({ itemId }) => String(itemId)),
       })),
       cartId: this.props.cart.id,
+      handoff,
       unassignedItemIds: unassignedLineItems.map(({ itemId }) => String(itemId)),
     });
 
@@ -910,6 +913,47 @@ export class DealerShipping extends React.PureComponent<
     );
   }
 
+  private getDealerId(selectedDealer = this.state.selectedDealer): string | number | undefined {
+    return selectedDealer?.dealerId ?? selectedDealer?.id;
+  }
+
+  private getActiveHandoffIntent(
+    selectedDealer: any,
+    destination: AddressRequestBody,
+    lineItems: Array<{ itemId: string | number }>,
+  ): CheckoutHandoffIntent | undefined {
+    const dealerId = this.getDealerId(selectedDealer);
+
+    if (dealerId === undefined || dealerId === null || dealerId === '') {
+      console.error('Automatic FFL cannot correlate the selected dealer without its canonical ID');
+      return undefined;
+    }
+
+    return {
+      active: true,
+      dealerId,
+      destination,
+      itemIds: lineItems.map(({ itemId }) => String(itemId)),
+    };
+  }
+
+  private getInactiveHandoffIntent(
+    selectedDealer = this.state.selectedDealer,
+  ): CheckoutHandoffIntent {
+    if (!selectedDealer) {
+      return { active: false };
+    }
+
+    const previousDealerId = this.getDealerId(selectedDealer);
+    const previousDestination = this.resolveDealerShippingAddress(selectedDealer).shippingAddress;
+
+    return {
+      active: false,
+      ...(previousDealerId === undefined ? {} : { previousDealerId }),
+      previousDestination,
+    };
+  }
+
   /**
    * When the user toggles the bypass checkbox, we clear all consignments
    * and set the bypassFFL flag to true. Once bypassed, the customer cannot revert.
@@ -917,7 +961,10 @@ export class DealerShipping extends React.PureComponent<
   private handleBypassFFLToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
       this.setState({ ammoRoutingError: false, isUpdatingShippingData: true });
-      const result = await this.props.fflConsignmentCoordinator.clearAll(this.props.cart.id);
+      const result = await this.props.fflConsignmentCoordinator.clearAll(
+        this.props.cart.id,
+        this.getInactiveHandoffIntent(),
+      );
 
       if (!this.isUnmounted && result.status !== 'superseded') {
         this.setState({ isUpdatingShippingData: false });
@@ -947,7 +994,11 @@ export class DealerShipping extends React.PureComponent<
   handleManualFFLInput: () => Promise<void> = async () => {
     const { manualFflInput } = this.state;
     const dealerLineItems = this.getDealerLineItems();
-    const result = await this.reconcileFflConsignments([], dealerLineItems);
+    const result = await this.reconcileFflConsignments(
+      [],
+      dealerLineItems,
+      this.getInactiveHandoffIntent(),
+    );
 
     if (result.status === 'failed') {
       this.reportFflCoordinatorFailure(result);
@@ -980,19 +1031,22 @@ export class DealerShipping extends React.PureComponent<
 
   selectDealer: (dealer: any) => Promise<void> = (dealer: any) => {
     const selectedDealer = { ...dealer, shouldSaveAddress: false };
+    const dealerId = this.getDealerId(selectedDealer);
 
     // API call to track dealer selection for analytics purposes
-    fetch(
-      `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealer.id}/select`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
+    if (dealerId !== undefined) {
+      fetch(
+        `https://${process.env.HOST}/store-front/api/${this.props.storeHash}/dealers/${dealerId}/select`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
         },
-      },
-    ).catch((error) => {
-      console.log('Error logging dealer selection:', error);
-    });
+      ).catch((error) => {
+        console.log('Error logging dealer selection:', error);
+      });
+    }
 
     // Always remember the customer's selection, even if name fields are still
     // empty. commitDealerConsignment is a no-op until both names are present;
@@ -1071,7 +1125,11 @@ export class DealerShipping extends React.PureComponent<
         customLastNameInputError: !recipientName.lastName,
       });
 
-      const result = await this.reconcileFflConsignments([], fflItems);
+      const result = await this.reconcileFflConsignments(
+        [],
+        fflItems,
+        this.getInactiveHandoffIntent(selectedDealer),
+      );
 
       if (result.status === 'failed') {
         this.reportFflCoordinatorFailure(result);
@@ -1094,9 +1152,11 @@ export class DealerShipping extends React.PureComponent<
       return false;
     }
 
-    const result = await this.reconcileFflConsignments([
-      { address: shippingAddress, lineItems: fflItems },
-    ]);
+    const result = await this.reconcileFflConsignments(
+      [{ address: shippingAddress, lineItems: fflItems }],
+      [],
+      this.getActiveHandoffIntent(selectedDealer, shippingAddress, fflItems),
+    );
 
     if (result.status === 'fulfilled') {
       if (shippingAddress.fflID) {
@@ -1366,7 +1426,12 @@ export class DealerShipping extends React.PureComponent<
       unassignedLineItems.push(...this.props.stateRestrictedConsignmentItems);
     }
 
-    const result = await this.reconcileFflConsignments(assignments, unassignedLineItems);
+    const handoff = shouldClearAmmoOnlyDealer
+      ? this.getInactiveHandoffIntent(retainedDealer)
+      : dealerShippingAddress && dealerLineItems.length
+      ? this.getActiveHandoffIntent(retainedDealer, dealerShippingAddress, dealerLineItems)
+      : undefined;
+    const result = await this.reconcileFflConsignments(assignments, unassignedLineItems, handoff);
 
     if (result.status === 'superseded') {
       return false;

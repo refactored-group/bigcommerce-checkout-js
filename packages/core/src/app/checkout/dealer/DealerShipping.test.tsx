@@ -37,6 +37,7 @@ const dealerAddress = {
   address1: '200 Dealer Road',
   city: 'Denver',
   company: 'Example FFL',
+  dealerId: 'dealer-1',
   firstName: 'FFL',
   lastName: 'Receiving',
   postalCode: '80202',
@@ -382,6 +383,48 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(model.ownerIds('gun-1')).toHaveLength(1);
     expect(props.setSelectedFFL).toHaveBeenCalledWith(
       expect.objectContaining({ fflID: 'ffl-firearm-only', shouldSaveAddress: false }),
+    );
+  });
+
+  it('publishes the canonical dealer ID after the dealer consignment is confirmed', async () => {
+    const handoffPublisher = {
+      configure: jest.fn(),
+      dispose: jest.fn(),
+      publish: jest.fn(),
+    };
+    const explicitDealer = {
+      ...dealerAddress,
+      dealerId: 42,
+      fflID: 'ffl-firearm-only',
+    };
+    const { subject } = makeSubject(false, (nextProps) => {
+      nextProps.cart.lineItems.physicalItems = [
+        { addedByPromotion: false, id: 'gun-1', parentId: null, quantity: 1 },
+      ];
+      nextProps.consignments = [];
+      nextProps.stateRestrictedConsignmentItems = [];
+      nextProps.fflConsignmentCoordinator = createFflConsignmentCoordinator({
+        assignItemsToAddress: nextProps.assignItem,
+        deleteConsignment: nextProps.deleteConsignment,
+        getState: nextProps.getCheckoutState,
+        handoffPublisher,
+        unassignItemsToAddress: nextProps.unassignItem,
+      });
+    });
+
+    await subject.selectDealer(explicitDealer);
+
+    expect(handoffPublisher.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        active: true,
+        dealerId: 42,
+        destination: expect.objectContaining({ fflID: 'ffl-firearm-only' }),
+      }),
+      expect.any(Object),
+    );
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/dealers/42/select'),
+      expect.any(Object),
     );
   });
 
@@ -1020,6 +1063,43 @@ describe('DealerShipping ammo reconciliation', () => {
     expect(model.ownerIds('ammo-1')).toEqual([]);
     expect(model.ownerIds('regular-1')).toEqual(['mixed-consignment']);
     expect(subject.state.manualFflInput).toBe(true);
+  });
+
+  it('publishes an inactive tombstone after manual dealer removal succeeds', async () => {
+    const handoffPublisher = {
+      configure: jest.fn(),
+      dispose: jest.fn(),
+      publish: jest.fn(),
+    };
+    const explicitDealer = { ...dealerAddress, dealerId: 42, fflID: 'ffl-123' };
+    const { subject } = makeSubject(false, (nextProps) => {
+      nextProps.consignments = [
+        {
+          id: 'dealer-consignment',
+          lineItemIds: ['gun-1', 'ammo-1'],
+          shippingAddress: committedDealerAddress,
+        },
+      ];
+      nextProps.fflConsignmentCoordinator = createFflConsignmentCoordinator({
+        assignItemsToAddress: nextProps.assignItem,
+        deleteConsignment: nextProps.deleteConsignment,
+        getState: nextProps.getCheckoutState,
+        handoffPublisher,
+        unassignItemsToAddress: nextProps.unassignItem,
+      });
+    });
+    subject.state = { ...subject.state, selectedDealer: explicitDealer };
+
+    await subject.handleManualFFLInput();
+
+    expect(handoffPublisher.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        active: false,
+        previousDealerId: 42,
+        previousDestination: expect.objectContaining({ fflID: 'ffl-123' }),
+      }),
+      expect.any(Object),
+    );
   });
 
   it('preserves regular-item shipping when missing recipient names clear dealer items', async () => {

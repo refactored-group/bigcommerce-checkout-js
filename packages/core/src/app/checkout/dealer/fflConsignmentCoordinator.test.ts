@@ -182,6 +182,62 @@ const makePlan = (
 });
 
 describe('fflConsignmentCoordinator', () => {
+  it('publishes an active handoff only after BigCommerce confirms the dealer assignment', async () => {
+    const sdk = createStatefulSdk();
+    const handoffPublisher = {
+      configure: jest.fn(),
+      dispose: jest.fn(),
+      publish: jest.fn(),
+    };
+    const coordinator = createFflConsignmentCoordinator({ ...sdk, handoffPublisher });
+    const handoff = {
+      active: true as const,
+      dealerId: 42,
+      destination: dealerAddress,
+      itemIds: ['gun-1'],
+    };
+
+    coordinator.configureHandoff({ cartId: 'cart-1', storeHash: 'store-hash' });
+    const result = await coordinator.reconcile({
+      ...makePlan(dealerAddress as AddressRequestBody, ['gun-1']),
+      handoff,
+    });
+
+    expect(result).toMatchObject({ status: 'fulfilled' });
+    expect(handoffPublisher.configure).toHaveBeenCalledWith({
+      cartId: 'cart-1',
+      storeHash: 'store-hash',
+    });
+    expect(handoffPublisher.publish).toHaveBeenCalledWith(
+      handoff,
+      expect.objectContaining({ data: expect.any(Object) }),
+    );
+  });
+
+  it('publishes a tombstone only after every consignment is cleared', async () => {
+    const sdk = createStatefulSdk();
+    sdk.setConsignments([
+      { id: 'dealer', lineItemIds: ['gun-1'], shippingAddress: dealerAddress } as Consignment,
+    ]);
+    const handoffPublisher = {
+      configure: jest.fn(),
+      dispose: jest.fn(),
+      publish: jest.fn(),
+    };
+    const coordinator = createFflConsignmentCoordinator({ ...sdk, handoffPublisher });
+    const tombstone = {
+      active: false as const,
+      previousDealerId: 42,
+      previousDestination: dealerAddress,
+    };
+
+    await expect(coordinator.clearAll('cart-1', tombstone)).resolves.toMatchObject({
+      status: 'fulfilled',
+    });
+
+    expect(handoffPublisher.publish).toHaveBeenCalledWith(tombstone);
+  });
+
   it('does not mutate an already fulfilled plan', async () => {
     const sdk = createStatefulSdk();
     sdk.setConsignments([

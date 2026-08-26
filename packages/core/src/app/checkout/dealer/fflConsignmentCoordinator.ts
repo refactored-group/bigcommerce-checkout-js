@@ -8,6 +8,14 @@ import {
 } from '@bigcommerce/checkout-sdk';
 import { isEqual } from 'lodash';
 
+import {
+  CheckoutHandoffClient,
+  CheckoutHandoffContext,
+  CheckoutHandoffIntent,
+  CheckoutHandoffPublisher,
+  createCheckoutHandoffPublisher,
+} from './checkoutHandoff';
+
 export interface FflDestinationAssignment {
   address: AddressRequestBody;
   itemIds: string[];
@@ -16,6 +24,7 @@ export interface FflDestinationAssignment {
 export interface FflReconciliationPlan {
   assignments: FflDestinationAssignment[];
   cartId: string;
+  handoff?: CheckoutHandoffIntent;
   unassignedItemIds: string[];
 }
 
@@ -30,7 +39,8 @@ export type FflCoordinatorResult =
 
 export interface FflConsignmentCoordinator {
   reconcile(plan: FflReconciliationPlan): Promise<FflCoordinatorResult>;
-  clearAll(cartId: string): Promise<FflCoordinatorResult>;
+  clearAll(cartId: string, handoff?: CheckoutHandoffIntent): Promise<FflCoordinatorResult>;
+  configureHandoff(context: CheckoutHandoffContext): void;
   dispose(): void;
 }
 
@@ -38,6 +48,9 @@ interface FflConsignmentCoordinatorDependencies {
   assignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
   deleteConsignment(consignmentId: string): Promise<CheckoutSelectors>;
   getState(): CheckoutSelectors;
+  handoffClient?: CheckoutHandoffClient;
+  handoffPublisher?: CheckoutHandoffPublisher;
+  refreshCheckout?(cartId: string): Promise<CheckoutSelectors>;
   unassignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
 }
 
@@ -207,6 +220,31 @@ export const createFflConsignmentCoordinator = (
   let generation = 0;
   let queue: Promise<void> = Promise.resolve();
 
+  const scheduleRefresh = (cartId: string): Promise<CheckoutSelectors> => {
+    if (!dependencies.refreshCheckout) {
+      return Promise.reject(new Error('BigCommerce checkout refresh is not configured'));
+    }
+
+    const result = queue.then(() => dependencies.refreshCheckout!(cartId));
+    queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return result;
+  };
+
+  const handoffPublisher =
+    dependencies.handoffPublisher ||
+    (dependencies.handoffClient && dependencies.refreshCheckout
+      ? createCheckoutHandoffPublisher({
+          client: dependencies.handoffClient,
+          getCheckoutState: dependencies.getState,
+          matchesDestination: isSameConsignmentDestination,
+          refreshCheckout: scheduleRefresh,
+        })
+      : undefined);
+
   const isSuperseded = (requestGeneration: number): boolean =>
     disposed || requestGeneration !== generation;
 
@@ -315,10 +353,17 @@ export const createFflConsignmentCoordinator = (
         };
       }
 
+      if (plan.handoff) {
+        handoffPublisher?.publish(plan.handoff, snapshot.checkoutState);
+      }
+
       return { status: 'fulfilled', checkoutState: snapshot.checkoutState };
     });
 
-  const clearAll = (cartId: string): Promise<FflCoordinatorResult> =>
+  const clearAll = (
+    cartId: string,
+    handoff: CheckoutHandoffIntent = { active: false },
+  ): Promise<FflCoordinatorResult> =>
     schedule(async (requestGeneration) => {
       let snapshot: FflCheckoutSnapshot;
 
@@ -360,15 +405,19 @@ export const createFflConsignmentCoordinator = (
         };
       }
 
+      handoffPublisher?.publish(handoff);
+
       return { status: 'fulfilled', checkoutState: snapshot.checkoutState };
     });
 
   return {
     reconcile,
     clearAll,
+    configureHandoff: (context) => handoffPublisher?.configure(context),
     dispose: () => {
       disposed = true;
       generation += 1;
+      handoffPublisher?.dispose();
     },
   };
 };

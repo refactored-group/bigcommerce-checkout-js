@@ -57,6 +57,7 @@ import mapToCheckoutProps from './mapToCheckoutProps';
 import navigateToOrderConfirmation from './navigateToOrderConfirmation';
 import withCheckout from './withCheckout';
 import DealerShipping from './dealer/DealerShipping';
+import { createCheckoutHandoffClient } from './dealer/checkoutHandoff';
 import {
     createFflConsignmentCoordinator,
     FflConsignmentCoordinator,
@@ -253,6 +254,9 @@ export class Checkout extends Component<
             assignItemsToAddress: this.props.assignItemsToAddress,
             deleteConsignment: this.props.deleteConsignment,
             getState: this.props.getCheckoutState,
+            handoffClient: createCheckoutHandoffClient(`https://${process.env.HOST}`),
+            refreshCheckout: (cartId) =>
+                this.props.loadCheckout(cartId, this.getCheckoutLoadOptions()),
             unassignItemsToAddress: this.props.unassignItemsToAddress,
         });
     private isFflRelatedCart = false;
@@ -457,6 +461,13 @@ export class Checkout extends Component<
 
             this.isFflRelatedCart = hasFflRelatedItems;
             this.setState({ hasFflRelatedItems });
+
+            if (hasFflRelatedItems && cart) {
+                this.fflConsignmentCoordinator.configureHandoff({
+                    cartId: cart.id,
+                    storeHash,
+                });
+            }
 
             if (shouldResetGuestFflShipping(data.getCustomer(), hasFflRelatedItems, consignments)) {
                 this.customerIdentityResetKey = this.customerIdentityKey;
