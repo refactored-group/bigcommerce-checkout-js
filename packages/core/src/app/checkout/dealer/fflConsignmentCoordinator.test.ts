@@ -9,6 +9,7 @@ import { isEqual, pick } from 'lodash';
 import {
   createFflConsignmentCoordinator,
   FflReconciliationPlan,
+  synchronizeCheckoutHandoffPresence,
 } from './fflConsignmentCoordinator';
 
 const customerAddress = {
@@ -182,9 +183,30 @@ const makePlan = (
 });
 
 describe('fflConsignmentCoordinator', () => {
+  it('deactivates a prior handoff when the current cart has no FFL items', () => {
+    const coordinator = {
+      configureHandoff: jest.fn(),
+      deactivateHandoff: jest.fn(),
+    };
+
+    synchronizeCheckoutHandoffPresence(
+      coordinator as any,
+      { id: 'ordinary-cart' },
+      'store-hash',
+      false,
+    );
+
+    expect(coordinator.configureHandoff).toHaveBeenCalledWith({
+      cartId: 'ordinary-cart',
+      storeHash: 'store-hash',
+    });
+    expect(coordinator.deactivateHandoff).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes an active handoff only after BigCommerce confirms the dealer assignment', async () => {
     const sdk = createStatefulSdk();
     const handoffPublisher = {
+      confirmOrder: jest.fn().mockResolvedValue(undefined),
       configure: jest.fn(),
       dispose: jest.fn(),
       publish: jest.fn(),
@@ -220,6 +242,7 @@ describe('fflConsignmentCoordinator', () => {
       { id: 'dealer', lineItemIds: ['gun-1'], shippingAddress: dealerAddress } as Consignment,
     ]);
     const handoffPublisher = {
+      confirmOrder: jest.fn().mockResolvedValue(undefined),
       configure: jest.fn(),
       dispose: jest.fn(),
       publish: jest.fn(),
@@ -236,6 +259,23 @@ describe('fflConsignmentCoordinator', () => {
     });
 
     expect(handoffPublisher.publish).toHaveBeenCalledWith(tombstone);
+  });
+
+  it('delegates deactivation and final order confirmation to the handoff publisher', async () => {
+    const sdk = createStatefulSdk();
+    const handoffPublisher = {
+      confirmOrder: jest.fn().mockResolvedValue(undefined),
+      configure: jest.fn(),
+      dispose: jest.fn(),
+      publish: jest.fn(),
+    };
+    const coordinator = createFflConsignmentCoordinator({ ...sdk, handoffPublisher });
+
+    coordinator.deactivateHandoff();
+    await coordinator.confirmOrder(700);
+
+    expect(handoffPublisher.publish).toHaveBeenCalledWith({ active: false });
+    expect(handoffPublisher.confirmOrder).toHaveBeenCalledWith(700);
   });
 
   it('does not mutate an already fulfilled plan', async () => {

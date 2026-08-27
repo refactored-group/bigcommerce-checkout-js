@@ -4,7 +4,6 @@ import React, { FunctionComponent } from 'react';
 
 import { createLocaleContext, LocaleContext, LocaleContextType } from '@bigcommerce/checkout/locale';
 
-import { navigateToOrderConfirmation } from '../../checkout';
 import { getStoreConfig } from '../../config/config.mock';
 import CheckoutButton from '../CheckoutButton';
 
@@ -14,6 +13,7 @@ describe('ApplePayButton', () => {
     let localeContext: LocaleContextType;
     let ButtonTest: FunctionComponent;
     const initialize = jest.fn();
+    const complete = jest.fn();
     const error = jest.fn();
 
     beforeEach(() => {
@@ -26,6 +26,7 @@ describe('ApplePayButton', () => {
                     initialize={initialize}
                     methodId="applepay"
                     onClick={jest.fn()}
+                    onComplete={complete}
                     onError={error}
                 />
             </LocaleContext.Provider>
@@ -49,8 +50,14 @@ describe('ApplePayButton', () => {
                 subtotalLabel: 'Subtotal',
                 onClick: expect.any(Function),
                 onError: error,
-                onPaymentAuthorize: navigateToOrderConfirmation,
+                onPaymentAuthorize: complete,
             },
         });
+
+        const options = initialize.mock.calls[0][0];
+
+        options.applepay.onPaymentAuthorize();
+
+        expect(complete).toHaveBeenCalledTimes(1);
     });
 });

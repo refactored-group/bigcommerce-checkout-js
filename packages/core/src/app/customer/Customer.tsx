@@ -55,6 +55,7 @@ export interface CustomerProps {
     onSignIn?(): void;
     onSignInError?(error: Error): void;
     onUnhandledError?(error: Error): void;
+    onWalletButtonComplete?(orderId?: number): void;
     onWalletButtonClick?(methodName: string): void;
 }
 
@@ -186,6 +187,7 @@ class Customer extends Component<CustomerProps & WithCheckoutCustomerProps & Ana
             privacyPolicyUrl,
             requiresMarketingConsent,
             onUnhandledError = noop,
+            onWalletButtonComplete,
             onWalletButtonClick = noop,
             step,
             isFloatingLabelEnabled,
@@ -203,6 +205,7 @@ class Customer extends Component<CustomerProps & WithCheckoutCustomerProps & Ana
             initialize={initializeCustomer}
             isInitializing={isInitializing}
             methodIds={checkoutButtonIds}
+            onComplete={onWalletButtonComplete}
             onClick={onWalletButtonClick}
             onError={onUnhandledError}
           />;

@@ -51,6 +51,7 @@ describe('CheckoutButtonContainer', () => {
                         checkEmbeddedSupport={jest.fn()}
                         isPaymentStepActive={false}
                         onUnhandledError={jest.fn()}
+                        onWalletButtonComplete={jest.fn()}
                         onWalletButtonClick={jest.fn()}
                     />
                 </LocaleContext.Provider>
@@ -70,6 +71,7 @@ describe('CheckoutButtonContainer', () => {
                         checkEmbeddedSupport={jest.fn()}
                         isPaymentStepActive={false}
                         onUnhandledError={jest.fn()}
+                        onWalletButtonComplete={jest.fn()}
                         onWalletButtonClick={jest.fn()}
                     />
                 </LocaleContext.Provider>
@@ -89,6 +91,7 @@ describe('CheckoutButtonContainer', () => {
                         checkEmbeddedSupport={jest.fn()}
                         isPaymentStepActive={false}
                         onUnhandledError={jest.fn()}
+                        onWalletButtonComplete={jest.fn()}
                         onWalletButtonClick={jest.fn()}
                     />
                 </LocaleContext.Provider>
@@ -106,6 +109,7 @@ describe('CheckoutButtonContainer', () => {
                         checkEmbeddedSupport={jest.fn()}
                         isPaymentStepActive={true}
                         onUnhandledError={jest.fn()}
+                        onWalletButtonComplete={jest.fn()}
                         onWalletButtonClick={jest.fn()}
                     />
                 </LocaleContext.Provider>
@@ -135,6 +139,7 @@ describe('CheckoutButtonContainer', () => {
                         checkEmbeddedSupport={jest.fn()}
                         isPaymentStepActive={true}
                         onUnhandledError={jest.fn()}
+                        onWalletButtonComplete={jest.fn()}
                         onWalletButtonClick={jest.fn()}
                     />
                 </LocaleContext.Provider>

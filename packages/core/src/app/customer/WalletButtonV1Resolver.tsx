@@ -9,6 +9,7 @@ interface CheckoutButtonV1ResolverProps {
     deinitialize(options: CustomerRequestOptions): void;
     isShowingWalletButtonsOnTop?: boolean;
     initialize(options: CustomerInitializeOptions): void;
+    onComplete?(orderId?: number): void;
     onError?(error: Error): void;
     onClick?(methodName: string): void;
 }

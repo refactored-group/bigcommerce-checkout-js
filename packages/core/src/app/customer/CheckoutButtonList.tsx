@@ -44,6 +44,7 @@ export interface CheckoutButtonListProps {
     checkEmbeddedSupport?(methodIds: string[]): void;
     deinitialize(options: CustomerRequestOptions): void;
     initialize(options: CustomerInitializeOptions): void;
+    onComplete?(orderId?: number): void;
     onError?(error: Error): void;
     onClick?(methodId: string): void;
 }

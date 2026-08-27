@@ -61,6 +61,7 @@ import { createCheckoutHandoffClient } from './dealer/checkoutHandoff';
 import {
     createFflConsignmentCoordinator,
     FflConsignmentCoordinator,
+    synchronizeCheckoutHandoffPresence,
 } from './dealer/fflConsignmentCoordinator';
 import { ConfirmedAmmoRoutingSession } from './dealer/utils';
 
@@ -463,12 +464,12 @@ export class Checkout extends Component<
             this.isFflRelatedCart = hasFflRelatedItems;
             this.setState({ hasFflRelatedItems });
 
-            if (hasFflRelatedItems && cart) {
-                this.fflConsignmentCoordinator.configureHandoff({
-                    cartId: cart.id,
-                    storeHash,
-                });
-            }
+            synchronizeCheckoutHandoffPresence(
+                this.fflConsignmentCoordinator,
+                cart,
+                storeHash,
+                hasFflRelatedItems,
+            );
 
             if (shouldResetGuestFflShipping(data.getCustomer(), hasFflRelatedItems, consignments)) {
                 this.customerIdentityResetKey = this.customerIdentityKey;
@@ -594,6 +595,7 @@ export class Checkout extends Component<
                             checkEmbeddedSupport={this.checkEmbeddedSupport}
                             isPaymentStepActive={isPaymentStepActive}
                             onUnhandledError={this.handleUnhandledError}
+                            onWalletButtonComplete={this.navigateToOrderConfirmation}
                             onWalletButtonClick={this.handleWalletButtonClick}
                         />
                     )}
@@ -676,6 +678,7 @@ export class Checkout extends Component<
                     onSignInError={this.handleError}
                     onSubscribeToNewsletter={this.handleNewsletterSubscription}
                     onUnhandledError={this.handleUnhandledError}
+                    onWalletButtonComplete={this.navigateToOrderConfirmation}
                     onWalletButtonClick={this.handleWalletButtonClick}
                     step={step}
                     viewType={customerViewType}
@@ -937,6 +940,8 @@ export class Checkout extends Component<
 
     private navigateToOrderConfirmation: (orderId?: number) => void = (orderId) => {
         const { steps, analyticsTracker } = this.props;
+        const completedOrderId =
+            orderId ?? this.props.getCheckoutState().data.getOrder()?.orderId;
 
         analyticsTracker.trackStepCompleted(steps[steps.length - 1].type);
 
@@ -946,9 +951,22 @@ export class Checkout extends Component<
 
         SubscribeSessionStorage.removeSubscribeStatus();
 
-        this.setState({ isRedirecting: true }, () => {
-            navigateToOrderConfirmation(orderId);
-        });
+        const redirect = () =>
+            this.setState({ isRedirecting: true }, () => {
+                navigateToOrderConfirmation(completedOrderId);
+            });
+
+        if (completedOrderId === undefined) {
+            redirect();
+            return;
+        }
+
+        // When a confirmed handoff is available, its keepalive request starts
+        // before this method returns. Attribution never delays the success page.
+        void this.fflConsignmentCoordinator
+            .confirmOrder(completedOrderId)
+            .catch((error) => this.props.errorLogger.log(error));
+        redirect();
     };
 
     private checkEmbeddedSupport: (methodIds: string[]) => boolean = (methodIds) => {

@@ -9,6 +9,7 @@ import CheckoutButton, { CheckoutButtonProps } from '../CheckoutButton';
 
 const ApplePayButton: FunctionComponent<CheckoutButtonProps> = ({
     initialize,
+    onComplete = navigateToOrderConfirmation,
     onError,
     onClick = noop,
     ...rest
@@ -24,10 +25,10 @@ const ApplePayButton: FunctionComponent<CheckoutButtonProps> = ({
                     subtotalLabel: localeContext?.language.translate('cart.subtotal_text'),
                     onError,
                     onClick: () => onClick(rest.methodId),
-                    onPaymentAuthorize: navigateToOrderConfirmation,
+                    onPaymentAuthorize: onComplete,
                 },
             }),
-        [initialize, localeContext, onError, rest.containerId],
+        [initialize, localeContext, onClick, onComplete, onError, rest.containerId, rest.methodId],
     );
 
     return <CheckoutButton initialize={initializeOptions} {...rest} />;

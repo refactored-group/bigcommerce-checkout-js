@@ -41,9 +41,28 @@ export type FflCoordinatorResult =
 export interface FflConsignmentCoordinator {
   reconcile(plan: FflReconciliationPlan): Promise<FflCoordinatorResult>;
   clearAll(cartId: string, handoff?: CheckoutHandoffIntent): Promise<FflCoordinatorResult>;
+  confirmOrder(orderId: string | number): Promise<void>;
   configureHandoff(context: CheckoutHandoffContext): void;
+  deactivateHandoff(): void;
   dispose(): void;
 }
+
+export const synchronizeCheckoutHandoffPresence = (
+  coordinator: FflConsignmentCoordinator,
+  cart: Pick<Cart, 'id'> | undefined,
+  storeHash: string,
+  hasFflRelatedItems: boolean,
+): void => {
+  if (!cart) {
+    return;
+  }
+
+  coordinator.configureHandoff({ cartId: cart.id, storeHash });
+
+  if (!hasFflRelatedItems) {
+    coordinator.deactivateHandoff();
+  }
+};
 
 interface FflConsignmentCoordinatorDependencies {
   assignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
@@ -416,7 +435,9 @@ export const createFflConsignmentCoordinator = (
   return {
     reconcile,
     clearAll,
+    confirmOrder: (orderId) => handoffPublisher?.confirmOrder(orderId) || Promise.resolve(),
     configureHandoff: (context) => handoffPublisher?.configure(context),
+    deactivateHandoff: () => handoffPublisher?.publish({ active: false }),
     dispose: () => {
       disposed = true;
       generation += 1;
