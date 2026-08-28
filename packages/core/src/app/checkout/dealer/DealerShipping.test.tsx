@@ -389,7 +389,6 @@ describe('DealerShipping ammo reconciliation', () => {
 
   it('publishes the canonical dealer ID after the dealer consignment is confirmed', async () => {
     const handoffPublisher = {
-      confirmOrder: jest.fn().mockResolvedValue(undefined),
       configure: jest.fn(),
       dispose: jest.fn(),
       publish: jest.fn(),
@@ -1088,7 +1087,6 @@ describe('DealerShipping ammo reconciliation', () => {
 
   it('publishes an inactive tombstone after manual dealer removal succeeds', async () => {
     const handoffPublisher = {
-      confirmOrder: jest.fn().mockResolvedValue(undefined),
       configure: jest.fn(),
       dispose: jest.fn(),
       publish: jest.fn(),

@@ -41,7 +41,6 @@ export type FflCoordinatorResult =
 export interface FflConsignmentCoordinator {
   reconcile(plan: FflReconciliationPlan): Promise<FflCoordinatorResult>;
   clearAll(cartId: string, handoff?: CheckoutHandoffIntent): Promise<FflCoordinatorResult>;
-  confirmOrder(orderId: string | number): Promise<void>;
   configureHandoff(context: CheckoutHandoffContext): void;
   deactivateHandoff(): void;
   dispose(): void;
@@ -435,7 +434,6 @@ export const createFflConsignmentCoordinator = (
   return {
     reconcile,
     clearAll,
-    confirmOrder: (orderId) => handoffPublisher?.confirmOrder(orderId) || Promise.resolve(),
     configureHandoff: (context) => handoffPublisher?.configure(context),
     deactivateHandoff: () => handoffPublisher?.publish({ active: false }),
     dispose: () => {

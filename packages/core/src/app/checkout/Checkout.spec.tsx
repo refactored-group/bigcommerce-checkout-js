@@ -956,33 +956,6 @@ describe('Checkout', () => {
             expect(window.location.replace).toHaveBeenCalledWith('/checkout/order-confirmation');
         });
 
-        it('does not wait for FFL attribution before navigating to order confirmation', () => {
-            const checkout = container.find(CheckoutComponent).instance() as CheckoutComponent;
-            const coordinator = (checkout as any).fflConsignmentCoordinator;
-            const confirmation = new Promise<void>(() => undefined);
-
-            jest.spyOn(coordinator, 'confirmOrder').mockReturnValue(confirmation);
-
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            (container.find(Payment).at(0) as ReactWrapper<PaymentProps>).prop('onSubmit')!(700);
-
-            expect(coordinator.confirmOrder).toHaveBeenCalledWith(700);
-            expect(window.location.replace).toHaveBeenCalledWith('/checkout/order-confirmation');
-        });
-
-        it('uses the SDK order ID when a wallet completion callback omits it', () => {
-            const checkout = container.find(CheckoutComponent).instance() as CheckoutComponent;
-            const coordinator = (checkout as any).fflConsignmentCoordinator;
-
-            jest.spyOn(checkoutState.data, 'getOrder').mockReturnValue({ orderId: 701 } as any);
-            jest.spyOn(coordinator, 'confirmOrder').mockResolvedValue(undefined);
-
-            (checkout as any).navigateToOrderConfirmation();
-
-            expect(coordinator.confirmOrder).toHaveBeenCalledWith(701);
-            expect(window.location.replace).toHaveBeenCalledWith('/checkout/order-confirmation');
-        });
-
         it('posts message to parent of embedded checkout when shopper completes checkout', () => {
             jest.spyOn(embeddedMessengerMock, 'postComplete').mockImplementation(noop);
 

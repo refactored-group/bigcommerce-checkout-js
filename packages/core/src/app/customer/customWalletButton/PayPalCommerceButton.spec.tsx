@@ -4,6 +4,7 @@ import React, { FunctionComponent } from 'react';
 
 import { createLocaleContext, LocaleContext, LocaleContextType } from '@bigcommerce/checkout/locale';
 
+import { navigateToOrderConfirmation } from '../../checkout';
 import { getStoreConfig } from '../../config/config.mock';
 import CheckoutButton from '../CheckoutButton';
 
@@ -13,7 +14,6 @@ describe('PayPalCommerceButton', () => {
     let localeContext: LocaleContextType;
     let ButtonTest: FunctionComponent;
     const initialize = jest.fn();
-    const complete = jest.fn();
     const error = jest.fn();
 
     beforeEach(() => {
@@ -26,7 +26,6 @@ describe('PayPalCommerceButton', () => {
                     initialize={initialize}
                     methodId="paypalcommerce"
                     onClick={jest.fn()}
-                    onComplete={complete}
                     onError={error}
                 />
             </LocaleContext.Provider>
@@ -46,16 +45,10 @@ describe('PayPalCommerceButton', () => {
             methodId: 'paypalcommerce',
             paypalcommerce: {
                 container: 'paypalcommerceId',
-                onComplete: complete,
+                onComplete: navigateToOrderConfirmation,
                 onClick: expect.any(Function),
                 onError: error,
             },
         });
-
-        const options = initialize.mock.calls[0][0];
-
-        options.paypalcommerce.onComplete();
-
-        expect(complete).toHaveBeenCalledTimes(1);
     });
 });

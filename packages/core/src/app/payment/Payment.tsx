@@ -47,10 +47,10 @@ export interface PaymentProps {
     isUsingMultiShipping?: boolean;
     checkEmbeddedSupport?(methodIds: string[]): void; // TODO: We're currently doing this check in multiple places, perhaps we should move it up so this check get be done in a single place instead.
     onCartChangedError?(error: CartChangedError): void;
-    onFinalize?(orderId?: number): void;
+    onFinalize?(): void;
     onFinalizeError?(error: Error): void;
     onReady?(): void;
-    onSubmit?(orderId?: number): void;
+    onSubmit?(): void;
     onSubmitError?(error: Error): void;
     onUnhandledError?(error: Error): void;
     storeHash: string;

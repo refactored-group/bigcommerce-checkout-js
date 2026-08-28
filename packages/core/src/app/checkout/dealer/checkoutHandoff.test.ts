@@ -56,20 +56,6 @@ const flushPromises = async (turns = 20): Promise<void> => {
   }
 };
 
-const makeStorage = (): Pick<Storage, 'getItem' | 'removeItem' | 'setItem'> => {
-  const values = new Map<string, string>();
-
-  return {
-    getItem: (key) => values.get(key) ?? null,
-    removeItem: (key) => {
-      values.delete(key);
-    },
-    setItem: (key, value) => {
-      values.set(key, value);
-    },
-  };
-};
-
 describe('checkout handoff client', () => {
   it('uses the public BigCommerce handoff endpoint and store-hash boundary', async () => {
     global.fetch = jest
@@ -77,16 +63,6 @@ describe('checkout handoff client', () => {
       .mockResolvedValueOnce({
         headers: { get: jest.fn().mockReturnValue(null) },
         json: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 3 }),
-        ok: true,
-      })
-      .mockResolvedValueOnce({
-        headers: { get: jest.fn().mockReturnValue(null) },
-        json: jest.fn().mockResolvedValue({
-          active: true,
-          consumed: false,
-          dealer_id: 42,
-          revision: 4,
-        }),
         ok: true,
       })
       .mockResolvedValueOnce({
@@ -116,9 +92,6 @@ describe('checkout handoff client', () => {
         operationId: 'operation-1',
       }),
     ).resolves.toEqual({ active: true, consumed: false, dealerId: '42', revision: 4 });
-    await expect(
-      client.confirm(context, { dealerId: 42, expectedRevision: 4, orderId: 700 }),
-    ).resolves.toEqual({ active: true, consumed: false, dealerId: '42', revision: 4 });
 
     expect(global.fetch).toHaveBeenNthCalledWith(
       1,
@@ -143,15 +116,6 @@ describe('checkout handoff client', () => {
         }),
         keepalive: true,
         method: 'PUT',
-      }),
-    );
-    expect(global.fetch).toHaveBeenNthCalledWith(
-      3,
-      'https://api.example.test/big_commerce/api/checkouts/cart%2Fid/handoff/confirmation',
-      expect.objectContaining({
-        body: JSON.stringify({ dealer_id: 42, expected_revision: 4, order_id: '700' }),
-        keepalive: true,
-        method: 'POST',
       }),
     );
   });
@@ -250,35 +214,22 @@ describe('checkout handoff publisher', () => {
   const context = { cartId: 'cart-1', storeHash: 'store-hash' };
 
   const makePublisher = (
-    client: Partial<CheckoutHandoffClient>,
+    client: CheckoutHandoffClient,
     options: {
       checkoutState?: CheckoutSelectors;
-      getCheckoutState?: () => CheckoutSelectors;
       onError?: jest.Mock;
       refreshCheckout?: jest.Mock;
-      storage?: Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>;
     } = {},
   ) => {
     const checkoutState = options.checkoutState || makeCheckoutState(dealerAddress);
 
-    const completeClient = {
-      confirm: jest.fn().mockResolvedValue({
-        active: true,
-        consumed: false,
-        dealerId: '42',
-        revision: 3,
-      }),
-      ...client,
-    } as CheckoutHandoffClient;
-
     return createCheckoutHandoffPublisher({
-      client: completeClient,
+      client,
       createOperationId: jest.fn().mockReturnValue('stable-operation-id'),
-      getCheckoutState: options.getCheckoutState || (() => checkoutState),
+      getCheckoutState: () => checkoutState,
       matchesDestination: isSameCheckoutHandoffDestination,
       onError: options.onError,
       refreshCheckout: options.refreshCheckout || jest.fn().mockResolvedValue(checkoutState),
-      storage: options.storage,
       wait: jest.fn().mockResolvedValue(undefined),
     });
   };
@@ -291,7 +242,7 @@ describe('checkout handoff publisher', () => {
         .mockRejectedValueOnce(new TypeError('network unavailable'))
         .mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 3 }),
     };
-    const publisher = makePublisher(client, { onError: jest.fn() });
+    const publisher = makePublisher(client);
 
     publisher.configure(context);
     publisher.publish({
@@ -317,214 +268,6 @@ describe('checkout handoff publisher', () => {
         operationId: 'stable-operation-id',
       },
     ]);
-  });
-
-  it('confirms the order only against the latest successfully published dealer revision', async () => {
-    const client = {
-      confirm: jest.fn().mockResolvedValue({
-        active: true,
-        consumed: false,
-        dealerId: '42',
-        revision: 3,
-      }),
-      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
-      update: jest
-        .fn()
-        .mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 3 }),
-    };
-    const publisher = makePublisher(client, { onError: jest.fn() });
-
-    publisher.configure(context);
-    publisher.publish({
-      active: true,
-      dealerId: 42,
-      destination: dealerAddress,
-      itemIds: ['gun-1'],
-    });
-    await publisher.confirmOrder(700);
-
-    expect(client.confirm).toHaveBeenCalledWith(context, {
-      dealerId: '42',
-      expectedRevision: 3,
-      orderId: 700,
-    });
-  });
-
-  it('restores verified confirmation state after a hosted-payment round trip', async () => {
-    const storage = makeStorage();
-    const client = {
-      confirm: jest.fn().mockResolvedValue({
-        active: true,
-        consumed: false,
-        dealerId: '42',
-        revision: 3,
-      }),
-      load: jest
-        .fn()
-        .mockResolvedValueOnce({ active: false, consumed: false, revision: 2 })
-        .mockResolvedValueOnce({ active: true, consumed: false, dealerId: '42', revision: 3 }),
-      update: jest
-        .fn()
-        .mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 3 }),
-    };
-    const beforeRedirect = makePublisher(client, { onError: jest.fn(), storage });
-
-    beforeRedirect.configure(context);
-    beforeRedirect.publish({
-      active: true,
-      dealerId: 42,
-      destination: dealerAddress,
-      itemIds: ['gun-1'],
-    });
-    await flushPromises();
-
-    const stored = storage.getItem('automatic-ffl:bigcommerce:handoff:store-hash:cart-1') as string;
-
-    expect(stored).toContain('"dealerId":"42"');
-    expect(stored).not.toContain('Jane');
-    expect(stored).not.toContain('5555550100');
-
-    beforeRedirect.dispose();
-
-    const afterRedirect = makePublisher(client, { onError: jest.fn(), storage });
-    afterRedirect.configure(context);
-    const confirmation = afterRedirect.confirmOrder(700);
-
-    // The keepalive request must begin in the same call stack so checkout can
-    // navigate immediately without sacrificing hosted-payment attribution.
-    expect(client.confirm).toHaveBeenCalledWith(context, {
-      dealerId: '42',
-      expectedRevision: 3,
-      orderId: 700,
-    });
-    await confirmation;
-    expect(storage.getItem('automatic-ffl:bigcommerce:handoff:store-hash:cart-1')).toBeNull();
-  });
-
-  it('deletes a hosted-payment receipt when confirmation rejects a stale revision', async () => {
-    const storage = makeStorage();
-    const key = 'automatic-ffl:bigcommerce:handoff:store-hash:cart-1';
-
-    storage.setItem(
-      key,
-      JSON.stringify({
-        dealerId: '42',
-        destination: dealerAddress,
-        itemIds: ['gun-1'],
-        revision: 2,
-      }),
-    );
-
-    const client = {
-      confirm: jest
-        .fn()
-        .mockRejectedValue(
-          new CheckoutHandoffHttpError(409, undefined, undefined, 'stale_revision'),
-        ),
-      load: jest
-        .fn()
-        .mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 3 }),
-      update: jest.fn(),
-    };
-    const publisher = makePublisher(client, { onError: jest.fn(), storage });
-
-    publisher.configure(context);
-    await publisher.confirmOrder(700);
-
-    expect(client.confirm).toHaveBeenCalledWith(context, {
-      dealerId: '42',
-      expectedRevision: 2,
-      orderId: 700,
-    });
-    expect(storage.getItem(key)).toBeNull();
-  });
-
-  it('does not confirm an old dealer when the newest handoff publication fails', async () => {
-    const client = {
-      confirm: jest.fn(),
-      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 1 }),
-      update: jest
-        .fn()
-        .mockResolvedValueOnce({ active: true, consumed: false, dealerId: '42', revision: 2 })
-        .mockRejectedValueOnce(
-          new CheckoutHandoffHttpError(422, undefined, undefined, 'dealer_not_selectable'),
-        ),
-    };
-    const publisher = makePublisher(client, { onError: jest.fn() });
-
-    publisher.configure(context);
-    publisher.publish({
-      active: true,
-      dealerId: 42,
-      destination: dealerAddress,
-      itemIds: ['gun-1'],
-    });
-    await flushPromises();
-    publisher.publish({
-      active: true,
-      dealerId: 43,
-      destination: dealerAddress,
-      itemIds: ['gun-1'],
-    });
-    await flushPromises();
-    await publisher.confirmOrder(700);
-
-    expect(client.confirm).not.toHaveBeenCalled();
-  });
-
-  it('does not confirm a dealer after every routed FFL item leaves the cart', async () => {
-    let checkoutState = makeCheckoutState(dealerAddress);
-    const client = {
-      confirm: jest.fn(),
-      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
-      update: jest
-        .fn()
-        .mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 3 }),
-    };
-    const publisher = makePublisher(client, {
-      getCheckoutState: () => checkoutState,
-      onError: jest.fn(),
-    });
-
-    publisher.configure(context);
-    publisher.publish({
-      active: true,
-      dealerId: 42,
-      destination: dealerAddress,
-      itemIds: ['gun-1'],
-    });
-    await flushPromises();
-
-    checkoutState = {
-      data: {
-        getCart: () => ({
-          id: 'cart-1',
-          lineItems: { physicalItems: [] },
-        }),
-        getConsignments: () => [],
-      },
-    } as unknown as CheckoutSelectors;
-
-    await publisher.confirmOrder(700);
-
-    checkoutState = makeCheckoutState(dealerAddress);
-    await publisher.confirmOrder(700);
-
-    expect(client.confirm).not.toHaveBeenCalled();
-  });
-
-  it('does not create a tombstone when the server is already inactive', async () => {
-    const client = {
-      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 0 }),
-      update: jest.fn(),
-    };
-    const publisher = makePublisher(client, { checkoutState: makeCheckoutState() });
-
-    publisher.configure(context);
-    publisher.publish({ active: false });
-    await flushPromises();
-
-    expect(client.update).not.toHaveBeenCalled();
   });
 
   it('does not publish an active candidate unless the confirmed item owner still matches', async () => {

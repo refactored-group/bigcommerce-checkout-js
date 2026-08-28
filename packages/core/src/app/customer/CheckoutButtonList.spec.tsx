@@ -82,14 +82,12 @@ describe('CheckoutButtonList', () => {
     it('passes data to every checkout button', () => {
         const deinitialize = jest.fn();
         const initialize = jest.fn();
-        const onComplete = jest.fn();
         const component = mount(
             <LocaleContext.Provider value={localeContext}>
                 <CheckoutButtonList
                     deinitialize={deinitialize}
                     initialize={initialize}
                     methodIds={['amazonpay', 'braintreevisacheckout']}
-                    onComplete={onComplete}
                 />
             </LocaleContext.Provider>,
         );
@@ -99,7 +97,6 @@ describe('CheckoutButtonList', () => {
             methodId: 'amazonpay',
             deinitialize,
             initialize,
-            onComplete,
         });
     });
 

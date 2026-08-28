@@ -206,7 +206,6 @@ describe('fflConsignmentCoordinator', () => {
   it('publishes an active handoff only after BigCommerce confirms the dealer assignment', async () => {
     const sdk = createStatefulSdk();
     const handoffPublisher = {
-      confirmOrder: jest.fn().mockResolvedValue(undefined),
       configure: jest.fn(),
       dispose: jest.fn(),
       publish: jest.fn(),
@@ -242,7 +241,6 @@ describe('fflConsignmentCoordinator', () => {
       { id: 'dealer', lineItemIds: ['gun-1'], shippingAddress: dealerAddress } as Consignment,
     ]);
     const handoffPublisher = {
-      confirmOrder: jest.fn().mockResolvedValue(undefined),
       configure: jest.fn(),
       dispose: jest.fn(),
       publish: jest.fn(),
@@ -259,23 +257,6 @@ describe('fflConsignmentCoordinator', () => {
     });
 
     expect(handoffPublisher.publish).toHaveBeenCalledWith(tombstone);
-  });
-
-  it('delegates deactivation and final order confirmation to the handoff publisher', async () => {
-    const sdk = createStatefulSdk();
-    const handoffPublisher = {
-      confirmOrder: jest.fn().mockResolvedValue(undefined),
-      configure: jest.fn(),
-      dispose: jest.fn(),
-      publish: jest.fn(),
-    };
-    const coordinator = createFflConsignmentCoordinator({ ...sdk, handoffPublisher });
-
-    coordinator.deactivateHandoff();
-    await coordinator.confirmOrder(700);
-
-    expect(handoffPublisher.publish).toHaveBeenCalledWith({ active: false });
-    expect(handoffPublisher.confirmOrder).toHaveBeenCalledWith(700);
   });
 
   it('does not mutate an already fulfilled plan', async () => {

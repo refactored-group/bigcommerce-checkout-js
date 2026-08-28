@@ -19,18 +19,8 @@ export interface CheckoutHandoffUpdate {
   operationId: string;
 }
 
-export interface CheckoutHandoffConfirmation {
-  dealerId: string | number;
-  expectedRevision: number;
-  orderId: string | number;
-}
-
 export interface CheckoutHandoffClient {
   load(context: CheckoutHandoffContext): Promise<CheckoutHandoffState>;
-  confirm(
-    context: CheckoutHandoffContext,
-    confirmation: CheckoutHandoffConfirmation,
-  ): Promise<CheckoutHandoffState>;
   update(
     context: CheckoutHandoffContext,
     update: CheckoutHandoffUpdate,
@@ -58,12 +48,10 @@ interface CheckoutHandoffPublisherDependencies {
   maxAttempts?: number;
   onError?(error: Error): void;
   refreshCheckout(cartId: string): Promise<CheckoutSelectors>;
-  storage?: Pick<Storage, 'getItem' | 'removeItem' | 'setItem'>;
   wait?(milliseconds: number): Promise<void>;
 }
 
 export interface CheckoutHandoffPublisher {
-  confirmOrder(orderId: string | number): Promise<void>;
   configure(context: CheckoutHandoffContext): void;
   dispose(): void;
   publish(intent: CheckoutHandoffIntent, confirmedCheckoutState?: CheckoutSelectors): void;
@@ -75,16 +63,6 @@ interface CheckoutHandoffResponseBody {
   dealer_id?: unknown;
   error?: unknown;
   revision?: unknown;
-}
-
-interface ConfirmableHandoffIntent {
-  destination: Partial<Address>;
-  itemIds: string[];
-}
-
-interface StoredHandoffConfirmation extends ConfirmableHandoffIntent {
-  dealerId: string;
-  revision: number;
 }
 
 export class CheckoutHandoffHttpError extends Error {
@@ -270,9 +248,8 @@ export const createCheckoutHandoffClient = (baseUrl: string): CheckoutHandoffCli
   const request = async (
     context: CheckoutHandoffContext,
     init: RequestInit,
-    path = '',
   ): Promise<CheckoutHandoffState> => {
-    const response = await fetch(`${endpoint(context)}${path}`, {
+    const response = await fetch(endpoint(context), {
       ...init,
       headers: {
         'Content-Type': 'application/json',
@@ -303,20 +280,6 @@ export const createCheckoutHandoffClient = (baseUrl: string): CheckoutHandoffCli
 
   return {
     load: (context) => request(context, { method: 'GET' }),
-    confirm: (context, confirmation) =>
-      request(
-        context,
-        {
-          body: JSON.stringify({
-            dealer_id: confirmation.dealerId,
-            expected_revision: confirmation.expectedRevision,
-            order_id: String(confirmation.orderId),
-          }),
-          keepalive: true,
-          method: 'POST',
-        },
-        '/confirmation',
-      ),
     update: (context, update) =>
       request(context, {
         body: JSON.stringify({
@@ -361,7 +324,7 @@ const toError = (error: unknown): Error =>
 const hasMatchingConsignment = (
   checkoutState: CheckoutSelectors,
   cartId: string,
-  destination: Partial<Address>,
+  destination: AddressRequestBody,
   itemIds: string[],
   matchesDestination: CheckoutHandoffPublisherDependencies['matchesDestination'],
 ): boolean => {
@@ -393,61 +356,12 @@ const hasMatchingConsignment = (
   );
 };
 
-const getSessionStorage = (): Pick<Storage, 'getItem' | 'removeItem' | 'setItem'> | undefined => {
-  try {
-    return globalThis.sessionStorage;
-  } catch (_error) {
-    return undefined;
-  }
-};
-
-const storedDestination = (destination: Partial<Address>): Partial<Address> => ({
-  address1: destination.address1,
-  address2: destination.address2,
-  city: destination.city,
-  country: destination.country,
-  countryCode: destination.countryCode,
-  postalCode: destination.postalCode,
-  stateOrProvince: destination.stateOrProvince,
-  stateOrProvinceCode: destination.stateOrProvinceCode,
-});
-
-const parseStoredConfirmation = (value: string | null): StoredHandoffConfirmation | undefined => {
-  if (!value) {
-    return undefined;
-  }
-
-  try {
-    const candidate = JSON.parse(value) as Partial<StoredHandoffConfirmation>;
-
-    if (
-      typeof candidate.dealerId !== 'string' ||
-      candidate.dealerId.length === 0 ||
-      !Number.isInteger(candidate.revision) ||
-      (candidate.revision as number) < 0 ||
-      !candidate.destination ||
-      typeof candidate.destination !== 'object' ||
-      Array.isArray(candidate.destination) ||
-      !Array.isArray(candidate.itemIds) ||
-      candidate.itemIds.length === 0 ||
-      !candidate.itemIds.every((itemId) => typeof itemId === 'string')
-    ) {
-      return undefined;
-    }
-
-    return candidate as StoredHandoffConfirmation;
-  } catch (_error) {
-    return undefined;
-  }
-};
-
 export const createCheckoutHandoffPublisher = (
   dependencies: CheckoutHandoffPublisherDependencies,
 ): CheckoutHandoffPublisher => {
   const maxAttempts = dependencies.maxAttempts ?? 4;
   const wait = dependencies.wait ?? defaultWait;
   const nextOperationId = dependencies.createOperationId ?? createOperationId;
-  const storage = dependencies.storage ?? getSessionStorage();
   const reportError =
     dependencies.onError ??
     ((error: Error) => {
@@ -457,11 +371,6 @@ export const createCheckoutHandoffPublisher = (
     });
 
   let configurationGeneration = 0;
-  let active: boolean | undefined;
-  let confirmableDealerId: string | undefined;
-  let confirmableIntent: ConfirmableHandoffIntent | undefined;
-  let confirmablePublication: number | undefined;
-  let confirmableRevision: number | undefined;
   let context: CheckoutHandoffContext | undefined;
   let consumed = false;
   let disposed = false;
@@ -469,45 +378,6 @@ export const createCheckoutHandoffPublisher = (
   let publishGeneration = 0;
   let queue: Promise<void> = Promise.resolve();
   let revision: number | undefined;
-
-  const storageKey = (activeContext: CheckoutHandoffContext): string =>
-    `automatic-ffl:bigcommerce:handoff:${activeContext.storeHash}:${activeContext.cartId}`;
-
-  const removeStoredConfirmation = (activeContext: CheckoutHandoffContext): void => {
-    try {
-      storage?.removeItem(storageKey(activeContext));
-    } catch (_error) {
-      // Storage can be disabled by the browser. Same-page confirmation still works.
-    }
-  };
-
-  const storeConfirmation = (
-    activeContext: CheckoutHandoffContext,
-    confirmation: StoredHandoffConfirmation,
-  ): void => {
-    try {
-      storage?.setItem(storageKey(activeContext), JSON.stringify(confirmation));
-    } catch (_error) {
-      // Storage can be disabled or full. Same-page confirmation still works.
-    }
-  };
-
-  const readStoredConfirmation = (
-    activeContext: CheckoutHandoffContext,
-  ): StoredHandoffConfirmation | undefined => {
-    try {
-      const value = storage?.getItem(storageKey(activeContext)) ?? null;
-      const confirmation = parseStoredConfirmation(value);
-
-      if (value && !confirmation) {
-        removeStoredConfirmation(activeContext);
-      }
-
-      return confirmation;
-    } catch (_error) {
-      return undefined;
-    }
-  };
 
   const isCurrent = (configuration: number, publication?: number): boolean =>
     !disposed &&
@@ -541,29 +411,8 @@ export const createCheckoutHandoffPublisher = (
           const state = await dependencies.client.load(activeContext);
 
           if (isCurrent(configuration)) {
-            active = state.active;
             revision = state.revision;
             consumed = state.consumed;
-
-            const stored = readStoredConfirmation(activeContext);
-
-            if (
-              stored &&
-              state.active &&
-              !state.consumed &&
-              state.dealerId === stored.dealerId &&
-              state.revision === stored.revision
-            ) {
-              confirmableDealerId = stored.dealerId;
-              confirmableIntent = {
-                destination: stored.destination,
-                itemIds: stored.itemIds,
-              };
-              confirmablePublication = publishGeneration;
-              confirmableRevision = stored.revision;
-            } else if (stored) {
-              removeStoredConfirmation(activeContext);
-            }
           }
 
           return;
@@ -656,18 +505,9 @@ export const createCheckoutHandoffPublisher = (
     const configuration = configurationGeneration;
     const activeContext = context;
 
-    // A newer cart intent invalidates final-order confirmation immediately,
-    // even if its handoff request later fails or is superseded.
-    confirmableDealerId = undefined;
-    confirmableIntent = undefined;
-    confirmablePublication = undefined;
-    confirmableRevision = undefined;
-
     if (!activeContext || disposed) {
       return;
     }
-
-    removeStoredConfirmation(activeContext);
 
     const operation = async () => {
       if (!isCurrent(configuration, publication)) {
@@ -685,10 +525,6 @@ export const createCheckoutHandoffPublisher = (
       }
 
       if (!isCurrent(configuration, publication) || revision === undefined || consumed) {
-        return;
-      }
-
-      if (!intent.active && active === false) {
         return;
       }
 
@@ -723,30 +559,8 @@ export const createCheckoutHandoffPublisher = (
           });
 
           if (isCurrent(configuration)) {
-            active = state.active;
             revision = state.revision;
             consumed = state.consumed;
-          }
-
-          if (
-            isCurrent(configuration, publication) &&
-            intent.active &&
-            state.active &&
-            state.dealerId === String(intent.dealerId)
-          ) {
-            confirmableDealerId = state.dealerId;
-            confirmableIntent = {
-              destination: intent.destination,
-              itemIds: intent.itemIds,
-            };
-            confirmablePublication = publication;
-            confirmableRevision = state.revision;
-            storeConfirmation(activeContext, {
-              dealerId: state.dealerId,
-              destination: storedDestination(intent.destination),
-              itemIds: intent.itemIds,
-              revision: state.revision,
-            });
           }
 
           return;
@@ -767,7 +581,6 @@ export const createCheckoutHandoffPublisher = (
           }
 
           if (error instanceof CheckoutHandoffHttpError && error.status === 409 && error.state) {
-            active = error.state.active;
             revision = error.state.revision;
             consumed = error.state.consumed;
             staleRetries += 1;
@@ -821,141 +634,7 @@ export const createCheckoutHandoffPublisher = (
     });
   };
 
-  const confirmOrder = (orderId: string | number): Promise<void> => {
-    const publication = publishGeneration;
-    const configuration = configurationGeneration;
-    const activeContext = context;
-
-    if (!activeContext || disposed) {
-      return Promise.resolve();
-    }
-
-    const confirmationCandidate = (): StoredHandoffConfirmation | undefined => {
-      if (
-        confirmablePublication === publication &&
-        confirmableDealerId !== undefined &&
-        confirmableIntent !== undefined &&
-        confirmableRevision !== undefined
-      ) {
-        return {
-          dealerId: confirmableDealerId,
-          destination: confirmableIntent.destination,
-          itemIds: confirmableIntent.itemIds,
-          revision: confirmableRevision,
-        };
-      }
-
-      // A hosted payment return has the exact dealer and server revision in
-      // tab-scoped storage. The confirmation endpoint performs the same exact
-      // active/dealer/revision checks, so a preliminary GET would only delay
-      // navigation without adding an integrity boundary.
-      return readStoredConfirmation(activeContext);
-    };
-
-    const operation = async (candidate: StoredHandoffConfirmation) => {
-      if (!isCurrent(configuration, publication)) {
-        return;
-      }
-
-      // The cart can still change after a successful handoff publication. Use
-      // the SDK's retained checkout state to make sure at least one of the
-      // routed FFL items still belongs to the verified dealer consignment at
-      // the instant BigCommerce reports the order ID. If the state is missing
-      // or no longer matches, undercount instead of confirming a stale dealer.
-      if (
-        !hasMatchingConsignment(
-          dependencies.getCheckoutState(),
-          activeContext.cartId,
-          candidate.destination,
-          candidate.itemIds,
-          dependencies.matchesDestination,
-        )
-      ) {
-        confirmableDealerId = undefined;
-        confirmableIntent = undefined;
-        confirmablePublication = undefined;
-        confirmableRevision = undefined;
-        removeStoredConfirmation(activeContext);
-        return;
-      }
-
-      const confirmation = {
-        dealerId: candidate.dealerId,
-        expectedRevision: candidate.revision,
-        orderId,
-      };
-      let lastError: unknown;
-
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        if (!isCurrent(configuration, publication)) {
-          return;
-        }
-
-        try {
-          const state = await dependencies.client.confirm(activeContext, confirmation);
-
-          if (isCurrent(configuration, publication)) {
-            active = state.active;
-            revision = state.revision;
-            consumed = state.consumed;
-            removeStoredConfirmation(activeContext);
-          }
-
-          return;
-        } catch (error) {
-          lastError = error;
-
-          if (
-            !isCurrent(configuration, publication) ||
-            !isRetryable(error) ||
-            attempt === maxAttempts - 1
-          ) {
-            if (!isRetryable(error)) {
-              removeStoredConfirmation(activeContext);
-            }
-
-            break;
-          }
-
-          await wait(retryDelay(attempt, error));
-        }
-      }
-
-      if (isCurrent(configuration, publication)) {
-        reportError(toError(lastError));
-      }
-    };
-
-    const candidate = confirmationCandidate();
-
-    // Calling the async operation directly starts the keepalive fetch before
-    // returning to Checkout, which can then navigate without awaiting it.
-    if (candidate) {
-      return operation(candidate).catch((error) => {
-        if (isCurrent(configuration, publication)) {
-          reportError(toError(error));
-        }
-      });
-    }
-
-    // Preserve a best-effort fallback for an activation already in flight.
-    // Checkout does not wait for this path before navigating.
-    const result = queue.then(() => {
-      const queuedCandidate = confirmationCandidate();
-
-      return queuedCandidate ? operation(queuedCandidate) : undefined;
-    });
-    queue = result.catch((error) => {
-      if (isCurrent(configuration, publication)) {
-        reportError(toError(error));
-      }
-    });
-
-    return result;
-  };
-
   return {
-    confirmOrder,
     configure: (nextContext) => {
       if (
         context?.cartId === nextContext.cartId &&
@@ -965,25 +644,10 @@ export const createCheckoutHandoffPublisher = (
         return;
       }
 
-      const previousContext = context;
-
-      if (
-        previousContext &&
-        (previousContext.cartId !== nextContext.cartId ||
-          previousContext.storeHash !== nextContext.storeHash)
-      ) {
-        removeStoredConfirmation(previousContext);
-      }
-
       disposed = false;
       configurationGeneration += 1;
       publishGeneration += 1;
       context = nextContext;
-      active = undefined;
-      confirmableDealerId = undefined;
-      confirmableIntent = undefined;
-      confirmablePublication = undefined;
-      confirmableRevision = undefined;
       consumed = false;
       initializationPromise = undefined;
       revision = undefined;
@@ -998,10 +662,6 @@ export const createCheckoutHandoffPublisher = (
       disposed = true;
       configurationGeneration += 1;
       publishGeneration += 1;
-      confirmableDealerId = undefined;
-      confirmableIntent = undefined;
-      confirmablePublication = undefined;
-      confirmableRevision = undefined;
     },
     publish,
   };
