@@ -234,6 +234,45 @@ describe('checkout handoff publisher', () => {
     });
   };
 
+  it('never activates pickup even when its store has the dealer address', async () => {
+    const checkoutState = makeCheckoutState(dealerAddress);
+    const consignments = checkoutState.data.getConsignments()!;
+    consignments[0].selectedPickupOption = { pickupMethodId: 7 };
+    checkoutState.data.getConsignments = () => consignments;
+    const client = {
+      load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),
+      update: jest.fn(),
+    };
+    const publisher = makePublisher(client, { checkoutState });
+    publisher.configure(context);
+    publisher.publish({ active: true, dealerId: 42, destination: dealerAddress, itemIds: ['gun-1'] });
+    await flushPromises();
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('retries pickup deactivation against a stale dealer handoff after refreshing native pickup', async () => {
+    const checkoutState = makeCheckoutState(dealerAddress);
+    const consignments = checkoutState.data.getConsignments()!;
+    consignments[0].selectedPickupOption = { pickupMethodId: 7 };
+    checkoutState.data.getConsignments = () => consignments;
+    const client = {
+      load: jest.fn().mockResolvedValue({ active: true, consumed: false, dealerId: '42', revision: 2 }),
+      update: jest.fn()
+        .mockRejectedValueOnce(new CheckoutHandoffHttpError(409, {
+          active: true, consumed: false, dealerId: '43', revision: 3,
+        }))
+        .mockResolvedValueOnce({ active: false, consumed: false, revision: 4 }),
+    };
+    const refreshCheckout = jest.fn().mockResolvedValue(checkoutState);
+    const publisher = makePublisher(client, { checkoutState, refreshCheckout });
+    publisher.configure(context);
+    publisher.publish({ active: false });
+    await flushPromises();
+    expect(refreshCheckout).toHaveBeenCalledWith('cart-1');
+    expect(client.update).toHaveBeenCalledTimes(2);
+    expect(client.update.mock.calls[1][1]).toMatchObject({ active: false, expectedRevision: 3 });
+  });
+
   it('retries transient writes with one stable operation ID', async () => {
     const client = {
       load: jest.fn().mockResolvedValue({ active: false, consumed: false, revision: 2 }),

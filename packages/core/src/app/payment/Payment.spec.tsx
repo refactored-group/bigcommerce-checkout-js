@@ -25,7 +25,7 @@ import { getOrder } from '../order/orders.mock';
 import { getConsignment } from '../shipping/consignment.mock';
 import { Button } from '../ui/button';
 
-import Payment, { PaymentProps } from './Payment';
+import Payment, { Payment as PaymentComponent, PaymentProps } from './Payment';
 import { getPaymentMethod } from './payment-methods.mock';
 import PaymentForm, { PaymentFormProps } from './PaymentForm';
 import { PaymentMethodId } from './paymentMethod';
@@ -99,6 +99,7 @@ describe('Payment', () => {
         jest.spyOn(checkoutService, 'getState').mockImplementation(() => checkoutState);
 
         jest.spyOn(checkoutService, 'loadPaymentMethods').mockResolvedValue(checkoutState);
+        jest.spyOn(checkoutService, 'loadCheckout').mockResolvedValue(checkoutState);
 
         jest.spyOn(checkoutService, 'finalizeOrderIfNeeded').mockRejectedValue({
             type: 'order_finalization_not_required',
@@ -146,6 +147,45 @@ describe('Payment', () => {
 
     afterEach(() => {
         jest.clearAllMocks();
+    });
+
+    it.each([false, true])('runs pickup preflight before payment submission (custom=%s)', async (custom) => {
+        const submit = jest.spyOn(checkoutService, 'submitOrder').mockResolvedValue(checkoutState);
+        const customSubmit = jest.fn();
+        const error = new Error('Please confirm pickup');
+        const pickupPreflight = jest.fn().mockRejectedValue(error);
+        const container = mount(<PaymentTest {...defaultProps} pickupPreflight={pickupPreflight} />);
+        await new Promise((resolve) => process.nextTick(resolve));
+        container.update();
+
+        if (custom) {
+            (container.find(PaymentComponent).instance() as any).setSubmit(selectedPaymentMethod, customSubmit);
+            container.update();
+        }
+
+        await container.find(PaymentForm).prop('onSubmit')!({ paymentProviderRadio: selectedPaymentMethod.id });
+        expect(checkoutService.loadCheckout).toHaveBeenCalled();
+        expect(pickupPreflight).toHaveBeenCalledWith(checkoutState);
+        expect(submit).not.toHaveBeenCalled();
+        expect(customSubmit).not.toHaveBeenCalled();
+        expect(defaultProps.onSubmitError).toHaveBeenCalledWith(error);
+        container.unmount();
+    });
+
+    it('does not append retained dealer props to a native pickup order', async () => {
+        jest.spyOn(checkoutState.data, 'getConsignments').mockReturnValue([
+            { ...getConsignment(), selectedShippingOption: undefined, selectedPickupOption: { pickupMethodId: 7 } },
+        ]);
+        const submit = jest.spyOn(checkoutService, 'submitOrder').mockResolvedValue(checkoutState);
+        const update = jest.spyOn(checkoutService, 'updateCheckout').mockResolvedValue(checkoutState);
+        const container = mount(<PaymentTest {...defaultProps} fflToOrderComments selectedFFL={{ fflID: 'old-dealer' }}
+            pickupPreflight={jest.fn().mockResolvedValue(undefined)} />);
+        await new Promise((resolve) => process.nextTick(resolve));
+        container.update();
+        await container.find(PaymentForm).prop('onSubmit')!({ paymentProviderRadio: selectedPaymentMethod.id });
+        expect(submit).toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        container.unmount();
     });
 
     it('renders payment form with expected props', async () => {
@@ -602,7 +642,7 @@ describe('Payment', () => {
         const form: ReactWrapper<PaymentFormProps> = container.find(PaymentForm);
 
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        form.prop('onSubmit')!({
+        await form.prop('onSubmit')!({
             ccCvv: '123',
             ccExpiry: '10 / 25',
             ccName: 'test',
@@ -638,7 +678,7 @@ describe('Payment', () => {
         const form: ReactWrapper<PaymentFormProps> = container.find(PaymentForm);
 
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        form.prop('onSubmit')!({
+        await form.prop('onSubmit')!({
             ccCvv: '123',
             ccExpiry: '10 / 25',
             ccName: 'test',
@@ -662,7 +702,7 @@ describe('Payment', () => {
         const form: ReactWrapper<PaymentFormProps> = container.find(PaymentForm);
 
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        form.prop('onSubmit')!({
+        await form.prop('onSubmit')!({
             ccCvv: '123',
             ccExpiry: '10 / 25',
             ccName: 'test',
@@ -690,7 +730,7 @@ describe('Payment', () => {
         const form: ReactWrapper<PaymentFormProps> = container.find(PaymentForm);
 
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        form.prop('onSubmit')!({
+        await form.prop('onSubmit')!({
             ccCvv: '123',
             ccNumber: '4111 1111 1111 1111',
             instrumentId: '123',

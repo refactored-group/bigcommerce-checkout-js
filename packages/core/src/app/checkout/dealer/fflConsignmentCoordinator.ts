@@ -5,8 +5,12 @@ import {
   CheckoutSelectors,
   Consignment,
   ConsignmentAssignmentRequestBody,
+  ConsignmentsRequestBody,
+  ConsignmentUpdateRequestBody,
 } from '@bigcommerce/checkout-sdk';
 import { isEqual } from 'lodash';
+
+import { matchesPickup, pickupCartSignature } from '../pickup/pickup';
 
 import {
   CheckoutHandoffClient,
@@ -39,6 +43,9 @@ export type FflCoordinatorResult =
     };
 
 export interface FflConsignmentCoordinator {
+  suspendShipping(): Promise<void>;
+  resumeShipping(): void;
+  selectPickup(cartId: string, signature: string, methodId: number, eligibleMethodIds: number[], handoff?: CheckoutHandoffIntent): Promise<FflCoordinatorResult>;
   reconcile(plan: FflReconciliationPlan): Promise<FflCoordinatorResult>;
   clearAll(cartId: string, handoff?: CheckoutHandoffIntent): Promise<FflCoordinatorResult>;
   configureHandoff(context: CheckoutHandoffContext): void;
@@ -64,6 +71,8 @@ export const synchronizeCheckoutHandoffPresence = (
 };
 
 interface FflConsignmentCoordinatorDependencies {
+  createConsignments?(consignments: ConsignmentsRequestBody): Promise<CheckoutSelectors>;
+  updateConsignment?(consignment: ConsignmentUpdateRequestBody): Promise<CheckoutSelectors>;
   assignItemsToAddress(consignment: ConsignmentAssignmentRequestBody): Promise<CheckoutSelectors>;
   deleteConsignment(consignmentId: string): Promise<CheckoutSelectors>;
   getState(): CheckoutSelectors;
@@ -237,6 +246,8 @@ export const createFflConsignmentCoordinator = (
   dependencies: FflConsignmentCoordinatorDependencies,
 ): FflConsignmentCoordinator => {
   let disposed = false;
+  let shippingEnabled = true;
+  let previousDealer: CheckoutHandoffIntent = { active: false };
   let generation = 0;
   let queue: Promise<void> = Promise.resolve();
 
@@ -288,7 +299,7 @@ export const createFflConsignmentCoordinator = (
   };
 
   const reconcile = (plan: FflReconciliationPlan): Promise<FflCoordinatorResult> =>
-    schedule(async (requestGeneration) => {
+    !shippingEnabled ? Promise.resolve({ status: 'superseded' }) : schedule(async (requestGeneration) => {
       let snapshot: FflCheckoutSnapshot;
 
       try {
@@ -375,6 +386,11 @@ export const createFflConsignmentCoordinator = (
       }
 
       if (plan.handoff) {
+        previousDealer = plan.handoff.active ? {
+          active: false,
+          previousDealerId: plan.handoff.dealerId,
+          previousDestination: plan.handoff.destination,
+        } : plan.handoff;
         handoffPublisher?.publish(plan.handoff, snapshot.checkoutState);
       }
 
@@ -431,11 +447,76 @@ export const createFflConsignmentCoordinator = (
       return { status: 'fulfilled', checkoutState: snapshot.checkoutState };
     });
 
+  const selectPickup: FflConsignmentCoordinator['selectPickup'] = (
+    cartId, signature, methodId, eligibleMethodIds, handoff = previousDealer,
+  ) => schedule(async (requestGeneration) => {
+    try {
+      let snapshot = getCheckoutSnapshot(dependencies.getState(), cartId);
+
+      if (pickupCartSignature(snapshot.cart) !== signature ||
+          !snapshot.cart.lineItems.physicalItems.length || !eligibleMethodIds.includes(methodId)) {
+        throw new Error('Pickup must be confirmed for the current cart');
+      }
+
+      if (!dependencies.createConsignments || !dependencies.updateConsignment) {
+        throw new Error('Native pickup mutations are not configured');
+      }
+
+      if (snapshot.consignments.length > 1) {
+        for (const { id } of snapshot.consignments) {
+          const state = await dependencies.deleteConsignment(id);
+
+          if (isSuperseded(requestGeneration)) {
+            return { status: 'superseded' };
+          }
+
+          snapshot = getCheckoutSnapshot(state, cartId);
+        }
+      }
+
+      if (pickupCartSignature(snapshot.cart) !== signature) {
+        throw new Error('Cart changed during pickup selection');
+      }
+
+      const body = {
+        lineItems: snapshot.cart.lineItems.physicalItems.map(({ id, quantity }) => ({ itemId: id, quantity })),
+        pickupOption: { pickupMethodId: methodId },
+      };
+      const state = snapshot.consignments.length === 1
+        ? await dependencies.updateConsignment({ ...body, id: snapshot.consignments[0].id })
+        : await dependencies.createConsignments([body]);
+
+      if (isSuperseded(requestGeneration)) {
+        return { status: 'superseded' };
+      }
+
+      if (!matchesPickup(state, signature, methodId) ||
+          !matchesPickup(dependencies.getState(), signature, methodId)) {
+        throw new Error('BigCommerce did not confirm the requested whole-cart pickup');
+      }
+
+      handoffPublisher?.publish({ ...handoff, active: false }, state);
+
+      return { status: 'fulfilled', checkoutState: state };
+    } catch (error) {
+      return isSuperseded(requestGeneration)
+        ? { status: 'superseded' }
+        : { status: 'failed', kind: 'assign', error };
+    }
+  });
+
   return {
+    suspendShipping: async () => {
+      shippingEnabled = false;
+      generation += 1;
+      await queue;
+    },
+    resumeShipping: () => { shippingEnabled = true; },
+    selectPickup,
     reconcile,
     clearAll,
     configureHandoff: (context) => handoffPublisher?.configure(context),
-    deactivateHandoff: () => handoffPublisher?.publish({ active: false }),
+    deactivateHandoff: () => handoffPublisher?.publish(previousDealer),
     dispose: () => {
       disposed = true;
       generation += 1;

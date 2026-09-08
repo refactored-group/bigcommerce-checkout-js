@@ -64,6 +64,10 @@ import {
     synchronizeCheckoutHandoffPresence,
 } from './dealer/fflConsignmentCoordinator';
 import { ConfirmedAmmoRoutingSession } from './dealer/utils';
+import PickupController, { initialPickupState, PickupState } from './pickup/PickupController';
+import PickupShipping, { FulfillmentChoice } from './pickup/PickupShipping';
+import { hasNativePickup, pickupAddress, pickupCartSignature } from './pickup/pickup';
+import { SUPPORTED_METHODS } from '../customer';
 
 const Billing = lazy(() =>
     retry(
@@ -154,6 +158,7 @@ export interface CheckoutProps {
 }
 
 export interface CheckoutState {
+    pickup: PickupState;
     activeStepType?: CheckoutStepType;
     isBillingSameAsShipping: boolean;
     customerViewType?: CustomerViewType;
@@ -221,6 +226,7 @@ export class Checkout extends Component<
     CheckoutState
 > {
     state: CheckoutState = {
+        pickup: { ...initialPickupState },
         selectedFFL: null,
         requiresFreshFflSelection: false,
         fflLineItems: [],
@@ -252,6 +258,8 @@ export class Checkout extends Component<
     private customerIdentityResetPromise: Promise<void> = Promise.resolve();
     private fflConsignmentCoordinator: FflConsignmentCoordinator =
         createFflConsignmentCoordinator({
+            createConsignments: this.props.createConsignments,
+            updateConsignment: this.props.updateConsignment,
             assignItemsToAddress: this.props.assignItemsToAddress,
             deleteConsignment: this.props.deleteConsignment,
             getState: this.props.getCheckoutState,
@@ -262,8 +270,103 @@ export class Checkout extends Component<
             unassignItemsToAddress: this.props.unassignItemsToAddress,
         });
     private isFflRelatedCart = false;
+    private pickupInitialized = false;
+    private hasExplicitMultiShippingChoice = false;
+    private shippingOrderCommentDraft?: string;
+    private classifiedCartSignature?: string;
+    private pickupController = new PickupController({
+        coordinator: this.fflConsignmentCoordinator,
+        getState: () => this.props.getCheckoutState(),
+        updateCheckout: (body) => this.props.updateCheckout(body),
+        log: (error) => this.props.errorLogger.log(error),
+        onChange: (pickup) => new Promise((resolve) => this.setState({ pickup }, resolve)),
+        onRequireDelivery: () => {
+            if (shouldForceFreshFflShippingStep(this.props.steps)) {
+                this.navigateToStep(CheckoutStepType.Shipping);
+            }
+        },
+        onConfirmed: () => {
+            this.setState({ selectedFFL: null, confirmedAmmoRoutingSession: undefined,
+                customerAddressSelection: undefined }, () => this.handleShippingNextStep(false));
+        },
+        onShipping: async () => {
+            const cart = this.props.getCheckoutState().data.getCart();
+            const signature = pickupCartSignature(cart);
+
+            // A cart edited during pickup can acquire firearm/ammo items.
+            // Reclassify before mounting its normal shipping form.
+            if (cart && signature !== this.classifiedCartSignature) {
+                const [fflProducts, fflLineItems, fflStateRestrictedItems] =
+                    cart.lineItems.physicalItems.length ? await getFflLineItems(this.state.storeHash, cart) : [[], [], []];
+                if (signature !== pickupCartSignature(this.props.getCheckoutState().data.getCart())) {
+                    throw new Error('Your cart changed. Please try switching to shipping again.');
+                }
+                this.isFflRelatedCart = fflLineItems.length > 0 || fflStateRestrictedItems.length > 0;
+                this.classifiedCartSignature = signature;
+                await new Promise<void>((resolve) => this.setState({
+                    fflProducts, fflLineItems, fflStateRestrictedItems, hasFflRelatedItems: this.isFflRelatedCart,
+                }, resolve));
+            }
+
+            await new Promise<void>((resolve) => this.setState({
+                requiresFreshFflSelection: this.isFflRelatedCart,
+                selectedFFL: null, confirmedAmmoRoutingSession: undefined, customerAddressSelection: undefined,
+            }, resolve));
+        },
+        settleShipping: () => this.settleShippingMutations(),
+    });
+
+    private settleShippingMutations = (): Promise<void> => new Promise((resolve, reject) => {
+        let unsubscribe = () => undefined;
+        const timeout = window.setTimeout(() => {
+            unsubscribe();
+            reject(new Error('Shipping is still updating. Please try again.'));
+        }, 15000);
+        const check = () => {
+            // The old form is already unmounted. Wait for SDK requests that
+            // started before debounce cancellation, including initialization.
+            if (!this.props.getCheckoutState().statuses.isPending()) {
+                window.clearTimeout(timeout);
+                unsubscribe();
+                resolve();
+            }
+        };
+
+        unsubscribe = this.props.subscribeToCheckout(check);
+        check();
+    });
+
+    componentDidUpdate(): void {
+        if (this.pickupInitialized) {
+            const active = this.state.activeStepType || this.state.defaultStepType ||
+                this.props.steps.find(({ isActive }) => isActive)?.type;
+            this.pickupController.observe(active === CheckoutStepType.Shipping);
+        }
+    }
+
+    private isPickupSessionBlocked = (): boolean => {
+        const { data } = this.props.getCheckoutState();
+        const remotePayments = data.getCheckout()?.payments || [];
+
+        return remotePayments.some(({ providerId }) => SUPPORTED_METHODS.includes(providerId)) ||
+            Boolean(data.getPaymentProviderCustomer()?.stripeLinkAuthenticationState);
+    };
+
+    private needsPickupConfirmation = (): boolean =>
+        this.pickupController.isPickup() && !this.pickupController.isReady();
+
+    private pickupPreflight = async (state: CheckoutSelectors): Promise<void> => {
+        if (this.pickupController.isPickup(state) && this.isPickupSessionBlocked()) {
+            this.navigateToStep(CheckoutStepType.Shipping);
+            throw new Error('Exit express checkout before continuing with store pickup.');
+        }
+
+        await this.pickupController.preflight(state);
+    };
 
     componentWillUnmount(): void {
+        this.pickupInitialized = false;
+        this.pickupController.dispose();
         if (this.unsubscribeFromConsignments) {
             this.unsubscribeFromConsignments();
             this.unsubscribeFromConsignments = undefined;
@@ -320,6 +423,7 @@ export class Checkout extends Component<
         identityKey = getCustomerIdentityKey(checkoutState.data.getCustomer()),
     ): Promise<void> => {
         if (!this.isFflRelatedCart) {
+            this.pickupController.invalidate();
             return Promise.resolve();
         }
 
@@ -328,6 +432,8 @@ export class Checkout extends Component<
         }
 
         this.customerIdentityResetKey = identityKey;
+        this.pickupInitialized = false;
+        this.pickupController.reset();
         this.setState({
             isResolvingFflShipping: true,
             requiresFreshFflSelection: true,
@@ -337,6 +443,8 @@ export class Checkout extends Component<
             .catch(() => undefined)
             .then(async () => {
                 await this.resetFflShippingState(checkoutState);
+                this.fflConsignmentCoordinator.resumeShipping();
+                this.pickupInitialized = true;
 
                 if (this.customerIdentityKey === identityKey) {
                     this.setState({
@@ -462,6 +570,7 @@ export class Checkout extends Component<
             }
 
             this.isFflRelatedCart = hasFflRelatedItems;
+            this.classifiedCartSignature = pickupCartSignature(cart);
             this.setState({ hasFflRelatedItems });
 
             synchronizeCheckoutHandoffPresence(
@@ -491,8 +600,11 @@ export class Checkout extends Component<
                 hasMultiShippingEnabled &&
                 isUsingMultiShipping(consignments, cart.lineItems);
 
+            this.pickupInitialized = true;
+            this.pickupController.observe(false);
+
             this.setState({
-                isBillingSameAsShipping: checkoutBillingSameAsShippingEnabled,
+                isBillingSameAsShipping: hasNativePickup(consignments) ? false : checkoutBillingSameAsShippingEnabled,
                 isResolvingFflShipping: false,
                 isSubscribed: defaultNewsletterSignupOption,
                 requiresFreshFflSelection: hasFflRelatedItems && !this.state.selectedFFL,
@@ -590,7 +702,7 @@ export class Checkout extends Component<
 
                     <PromotionBannerList promotions={promotions} />
 
-                    {isShowingWalletButtonsOnTop && this.state.buttonConfigs?.length > 0 && (
+                    {isShowingWalletButtonsOnTop && !this.pickupController.isPickup() && this.state.buttonConfigs?.length > 0 && (
                         <CheckoutButtonContainer
                             checkEmbeddedSupport={this.checkEmbeddedSupport}
                             isPaymentStepActive={isPaymentStepActive}
@@ -601,7 +713,8 @@ export class Checkout extends Component<
 
                     <ol className="checkout-steps">
                         {steps
-                            .filter((step) => step.isRequired)
+                            .filter((step) => step.isRequired ||
+                                (step.type === CheckoutStepType.Shipping && this.pickupController.isPickup()))
                             .map((step) =>
                                 this.renderStep({
                                     ...step,
@@ -625,10 +738,7 @@ export class Checkout extends Component<
                 return this.renderCustomerStep(step);
 
             case CheckoutStepType.Shipping:
-                return (this.state.fflLineItems || this.state.fflStateRestrictedItems) &&
-                (this.state.fflLineItems.length > 0 || (this.state.fflStateRestrictedItems.length > 0 && this.state.withAmmoSubscription)) ?
-                this.renderDealerShippingStep(step) :
-                this.renderShippingStep(step);
+                return this.renderDeliveryStep(step);
 
             case CheckoutStepType.Billing:
                 return this.renderBillingStep(step);
@@ -667,7 +777,7 @@ export class Checkout extends Component<
                     checkEmbeddedSupport={this.checkEmbeddedSupport}
                     isEmbedded={isEmbedded()}
                     isSubscribed={isSubscribed}
-                    isWalletButtonsOnTop = {isShowingWalletButtonsOnTop }
+                    isWalletButtonsOnTop = {isShowingWalletButtonsOnTop || this.pickupController.isPickup()}
                     onAccountCreated={this.navigateToNextIncompleteStep}
                     onChangeViewType={this.setCustomerViewType}
                     onContinueAsGuest={this.navigateToNextIncompleteStep}
@@ -683,6 +793,64 @@ export class Checkout extends Component<
                 />
             </CheckoutStep>
         );
+    }
+
+    private renderDeliveryStep(step: CheckoutStepStatus): ReactNode {
+        const { pickup } = this.state;
+        const isDealer = this.state.fflLineItems.length > 0 ||
+            (this.state.fflStateRestrictedItems.length > 0 && this.state.withAmmoSubscription);
+        const shell = isDealer ? this.renderDealerShippingStep(step) : this.renderShippingStep(step);
+
+        if (!shell) {
+            return shell;
+        }
+
+        const active = this.pickupController.isPickup();
+        // Initial multi-shipping detection also counts AutoFFL's dealer/customer
+        // split. Only a shopper's explicit choice makes that dealer flow multi-shipping.
+        const multiShipping = this.state.isMultiShippingMode &&
+            (!isDealer || this.hasExplicitMultiShippingChoice);
+        const canDiscoverPickup = !multiShipping && !this.isPickupSessionBlocked();
+        const isCheckingPickup = pickup.status === 'idle' || pickup.status === 'loading';
+        const hasPickupChoices = pickup.status === 'ready' && pickup.choices.length > 0;
+        const offer = canDiscoverPickup && (isCheckingPickup || hasPickupChoices);
+        const choice = pickup.choices.find(({ id }) => id ===
+            this.props.consignments?.[0]?.selectedPickupOption?.pickupMethodId);
+        const summary = active && choice ? <div className="staticConsignment">
+            <strong><TranslatedString id="pickup.summary_heading" /></strong>
+            <div>{choice.location.label} — {choice.displayName}</div>
+            <div>{pickupAddress(choice.location)}</div>
+        </div> : shell.props.summary;
+
+        return React.cloneElement(shell, {
+            heading: shell.props.heading,
+            isComplete: active ? this.pickupController.isReady() : step.isComplete,
+            isEditable: active ? !pickup.transitioning : step.isEditable,
+            summary,
+        }, active ? <PickupShipping
+            pickup={pickup}
+            customerMessage={this.props.getCheckoutState().data.getCheckout()?.customerMessage}
+            showOrderComments={Boolean(this.props.getCheckoutState().data.getConfig()?.checkoutSettings.enableOrderComments)}
+            onConfirm={(message) => this.pickupController.confirm(message)}
+            onShipping={(message) => this.pickupController.chooseShipping(message)}
+            onSelect={(id) => this.pickupController.chooseMethod(id)}
+            onRetry={() => void this.pickupController.refresh()}
+        /> : <>
+            {offer && <FulfillmentChoice
+                intent="shipping"
+                disabled={pickup.transitioning}
+                onChange={(intent) => {
+                    if (intent === 'pickup') {
+                        void this.pickupController.choosePickup(this.shippingOrderCommentDraft);
+                        this.shippingOrderCommentDraft = undefined;
+                    }
+                }}
+            />}
+            <div onChangeCapture={(event) => {
+                const input = event.target as HTMLInputElement;
+                if (input.name === 'orderComment') { this.shippingOrderCommentDraft = input.value; }
+            }}>{shell.props.children}</div>
+        </>);
     }
 
     private renderShippingStep(step: CheckoutStepStatus): ReactNode {
@@ -825,6 +993,7 @@ export class Checkout extends Component<
             >
                 <LazyContainer loadingSkeleton={<ChecklistSkeleton />}>
                     <Payment
+                        pickupPreflight={this.pickupPreflight}
                         checkEmbeddedSupport={this.checkEmbeddedSupport}
                         errorLogger={errorLogger}
                         isEmbedded={isEmbedded()}
@@ -901,6 +1070,7 @@ export class Checkout extends Component<
     private handleToggleMultiShipping: () => void = () => {
         const { isMultiShippingMode } = this.state;
 
+        this.hasExplicitMultiShippingChoice = true;
         this.setState({ isMultiShippingMode: !isMultiShippingMode });
     };
 
@@ -926,7 +1096,7 @@ export class Checkout extends Component<
         // refresh. Once the customer step is complete, force every FFL-related
         // checkout through Shipping until that step is successfully submitted.
         if (
-            requiresFreshFflSelection &&
+            (this.needsPickupConfirmation() || (requiresFreshFflSelection && !this.pickupController.isReady())) &&
             shouldForceFreshFflShippingStep(steps)
         ) {
             this.navigateToStep(CheckoutStepType.Shipping, options);
@@ -1025,7 +1195,7 @@ export class Checkout extends Component<
         if (
             type !== CheckoutStepType.Customer &&
             type !== CheckoutStepType.Shipping &&
-            this.state.requiresFreshFflSelection &&
+            (this.needsPickupConfirmation() || (this.state.requiresFreshFflSelection && !this.pickupController.isReady())) &&
             shouldForceFreshFflShippingStep(this.props.steps)
         ) {
             this.navigateToStep(CheckoutStepType.Shipping);
@@ -1087,6 +1257,7 @@ export class Checkout extends Component<
     private handleShippingNextStep: (isBillingSameAsShipping: boolean) => void = (
         isBillingSameAsShipping,
     ) => {
+        if (this.needsPickupConfirmation()) { return; }
         this.setState(
             {
                 isBillingSameAsShipping,
@@ -1132,16 +1303,19 @@ export class Checkout extends Component<
     }
 
     private setSelectedFFL: () => void = (value) => {
+        if (this.pickupController.isPickup()) { return; }
         this.setState({ selectedFFL: value });
     }
 
     private setCustomerAddressSelection = (customerAddressSelection?: Address): void => {
+        if (this.pickupController.isPickup()) { return; }
         this.setState({ customerAddressSelection });
     };
 
     private confirmAmmoRoutingSession = (
         confirmedAmmoRoutingSession: ConfirmedAmmoRoutingSession,
     ): void => {
+        if (this.pickupController.isPickup()) { return; }
         const cartId = this.props.getCheckoutState()?.data?.getCart?.()?.id;
 
         if (

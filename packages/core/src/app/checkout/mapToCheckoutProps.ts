@@ -60,6 +60,10 @@ export default function mapToCheckoutProps({
         clearError: checkoutService.clearError,
         consignments: data.getConsignments(),
         deleteConsignment: checkoutService.deleteConsignment,
+        createConsignments: checkoutService.createConsignments,
+        updateConsignment: checkoutService.updateConsignment,
+        updateCheckout: checkoutService.updateCheckout,
+        subscribeToCheckout: checkoutService.subscribe,
         getCheckoutState: () => checkoutService.getState(),
         hasCartChanged: submitOrderError && submitOrderError.type === 'cart_changed', // TODO: Need to clear the error once it's displayed
         isGuestEnabled,

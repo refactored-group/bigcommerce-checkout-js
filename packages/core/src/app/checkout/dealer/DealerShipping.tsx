@@ -1108,6 +1108,7 @@ export class DealerShipping extends React.PureComponent<
    * `company` value is resolved upstream and preserved from the iframe payload.
    */
   commitDealerConsignment: () => Promise<boolean> = async () => {
+    if (this.isUnmounted) { return false; }
     const { getFields, onUnhandledError } = this.props;
     const selectedDealer = this.state.selectedDealer;
     const fflItems = this.getDealerLineItems();
@@ -1162,6 +1163,8 @@ export class DealerShipping extends React.PureComponent<
       [],
       this.getActiveHandoffIntent(selectedDealer, shippingAddress, fflItems),
     );
+
+    if (this.isUnmounted) { return false; }
 
     if (result.status === 'fulfilled') {
       if (shippingAddress.fflID) {

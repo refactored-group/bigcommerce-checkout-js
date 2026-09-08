@@ -5,7 +5,7 @@ import {
     createEmbeddedCheckoutMessenger,
     EmbeddedCheckoutMessenger,
 } from '@bigcommerce/checkout-sdk';
-import { mount, ReactWrapper } from 'enzyme';
+import { mount, ReactWrapper, shallow } from 'enzyme';
 import { EventEmitter } from 'events';
 import { noop, omit } from 'lodash';
 import React, { FunctionComponent } from 'react';
@@ -48,6 +48,8 @@ import Checkout, {
 } from './Checkout';
 import { getCheckout, getCheckoutWithPromotions } from './checkouts.mock';
 import CheckoutStep, { CheckoutStepProps } from './CheckoutStep';
+import PickupShipping, { FulfillmentChoice } from './pickup/PickupShipping';
+import { initialPickupState } from './pickup/PickupController';
 import CheckoutStepType from './CheckoutStepType';
 import getCheckoutStepStatuses from './getCheckoutStepStatuses';
 
@@ -59,10 +61,73 @@ describe('Checkout', () => {
     let embeddedMessengerMock: EmbeddedCheckoutMessenger;
     let extensionService: ExtensionService;
     let mountCheckout: () => ReactWrapper<any>;
+    let mountedCheckouts: ReactWrapper[];
     let subscribeEventEmitter: EventEmitter;
     let analyticsTracker: Partial<AnalyticsEvents>;
 
+    afterEach(() => {
+        mountedCheckouts.forEach((container) => container.unmount());
+    });
+
+    it.each(['regular', 'firearm', 'ammo', 'mixed'])('uses the shared pickup body for a %s cart', (kind) => {
+        const checkout = new CheckoutComponent({
+            ...defaultProps, cart: getCart(), consignments: [], getCheckoutState: () => checkoutState,
+        } as any);
+        const pickup = { ...initialPickupState, intent: 'pickup' as const };
+        checkout.state = { ...checkout.state, pickup,
+            fflLineItems: kind === 'firearm' || kind === 'mixed' ? [getPhysicalItem()] : [],
+            fflStateRestrictedItems: kind === 'ammo' || kind === 'mixed' ? [getPhysicalItem()] : [],
+        } as any;
+        (checkout as any).pickupController.state = pickup;
+        const step = (checkout as any).renderDeliveryStep({ type: CheckoutStepType.Shipping, isActive: true });
+        expect(step.props.children.type).toBe(PickupShipping);
+        expect(step.props.heading.props.id).toBe(
+            kind === 'regular' ? 'shipping.shipping_heading' : 'shipping.ffl_shipping_heading',
+        );
+        expect(step.props.isComplete).toBe(false);
+    });
+
+    it.each([
+        ['ordinary checkout', false, false, false, false, 'ready', true, true],
+        ['restored dealer/customer split', true, false, true, false, 'ready', true, true],
+        ['restored ammo/customer split', false, true, true, false, 'ready', true, true],
+        ['ordinary multi-shipping', false, false, true, false, 'ready', true, false],
+        ['explicit multi-shipping in a dealer flow', true, false, true, true, 'ready', true, false],
+        ['no eligible method', true, true, false, false, 'ready', false, false],
+        ['discovery not started', true, true, false, false, 'idle', false, true],
+        ['discovery still loading', true, true, false, false, 'loading', true, true],
+        ['discovery failed', true, true, false, false, 'error', true, false],
+    ])('gates the pickup choice for %s', (_name, firearms, ammo, multi, explicit, status, eligible, offered) => {
+        const checkout = new CheckoutComponent({
+            ...defaultProps, cart: getCart(), consignments: [], getCheckoutState: () => checkoutState,
+        } as any);
+        const pickup = { ...initialPickupState, status, choices: eligible ? [{ id: 7 }] : [] };
+        checkout.state = { ...checkout.state, pickup,
+            fflLineItems: firearms ? [getPhysicalItem()] : [],
+            fflStateRestrictedItems: ammo ? [getPhysicalItem()] : [],
+        } as any;
+        jest.spyOn(checkout, 'setState').mockImplementation((patch: any) => {
+            checkout.state = { ...checkout.state, ...patch };
+        });
+        if (explicit) {
+            (checkout as any).handleToggleMultiShipping();
+        }
+        checkout.state = { ...checkout.state, isMultiShippingMode: Boolean(multi) };
+        (checkout as any).pickupController.state = pickup;
+
+        const step = (checkout as any).renderDeliveryStep({ type: CheckoutStepType.Shipping, isActive: true });
+        const Body = () => step.props.children;
+        const body = shallow(<Body />);
+        expect(body.find(FulfillmentChoice)).toHaveLength(offered ? 1 : 0);
+        expect(body.find('[id="pickup.loading_text"]')).toHaveLength(0);
+        if (offered) {
+            expect(body.find(FulfillmentChoice).prop('disabled')).toBe(false);
+        }
+        body.unmount();
+    });
+
     beforeEach(() => {
+        mountedCheckouts = [];
         global.fetch = jest.fn().mockResolvedValue({
             json: jest.fn().mockResolvedValue([]),
         }) as jest.Mock;
@@ -75,6 +140,7 @@ describe('Checkout', () => {
         subscribeEventEmitter = new EventEmitter();
         analyticsTracker = {
             checkoutBegin: jest.fn(),
+            exitCheckout: jest.fn(),
             trackStepViewed: jest.fn(),
             trackStepCompleted: jest.fn()
         };
@@ -108,6 +174,9 @@ describe('Checkout', () => {
         );
 
         jest.spyOn(checkoutService, 'getState').mockImplementation(() => checkoutState);
+        jest.spyOn(checkoutService, 'loadBillingAddressFields').mockResolvedValue(checkoutState);
+        jest.spyOn(checkoutService, 'loadShippingAddressFields').mockResolvedValue(checkoutState);
+        jest.spyOn(checkoutService, 'loadShippingOptions').mockResolvedValue(checkoutState);
 
         jest.spyOn(checkoutService, 'loadPaymentMethods').mockResolvedValue(checkoutService.getState());
 
@@ -140,6 +209,7 @@ describe('Checkout', () => {
 
         mountCheckout = () => {
             const container = mount(<CheckoutTest {...defaultProps} />);
+            mountedCheckouts.push(container);
             const checkout = container.find(CheckoutComponent).instance() as CheckoutComponent;
 
             act(() => {
@@ -260,6 +330,7 @@ describe('Checkout', () => {
             analyticsTracker,
             clearError: jest.fn(),
             steps: incompleteCustomerSteps,
+            getCheckoutState: () => checkoutState,
         } as any);
 
         (checkout as any).setState = (update: any, callback?: () => void) => {

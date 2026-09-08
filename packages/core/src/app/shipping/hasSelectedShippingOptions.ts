@@ -9,6 +9,7 @@ export default function hasSelectedShippingOptions(consignments: Consignment[]):
     return every(
         consignments,
         (consignment) =>
+            Boolean(consignment.selectedPickupOption?.pickupMethodId) ||
             (consignment.selectedShippingOption &&
                 consignment.selectedShippingOption.id &&
                 // Selected option is available

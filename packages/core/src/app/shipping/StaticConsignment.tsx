@@ -1,5 +1,6 @@
 import { Cart, Consignment } from '@bigcommerce/checkout-sdk';
 import React, { FunctionComponent, memo } from 'react';
+import { TranslatedString } from '@bigcommerce/checkout/locale';
 
 import { isPayPalFastlaneAddress, PoweredByPayPalFastlaneLabel, usePayPalFastlaneAddress } from '@bigcommerce/checkout/paypal-fastlane-integration';
 
@@ -26,13 +27,14 @@ const StaticConsignment: FunctionComponent<StaticConsignmentProps> = ({
 
     return (
         <div className="staticConsignment">
+            {consignment.selectedPickupOption && <strong><TranslatedString id="pickup.summary_heading" /></strong>}
             <StaticAddress address={address} type={AddressType.Shipping} />
 
             {showPayPalFastlaneAddressLabel && <PoweredByPayPalFastlaneLabel />}
 
             {!compactView && <StaticConsignmentItemList cart={cart} consignment={consignment} />}
 
-            {selectedShippingOption && (
+            {selectedShippingOption && !consignment.selectedPickupOption && (
                 <div>
                     <div className="shippingOption shippingOption--alt shippingOption--selected">
                         <StaticShippingOption

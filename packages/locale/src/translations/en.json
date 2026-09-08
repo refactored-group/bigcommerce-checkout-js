@@ -554,7 +554,7 @@
                     "boletobancario": "Boleto Bancário Ticket"
                 },
                 "bluesnapdirect": {
-                    "sepa_direct_debit":  "SEPA Direct Debit Mandate Reference: {mandate}"
+                    "sepa_direct_debit": "SEPA Direct Debit Mandate Reference: {mandate}"
                 },
                 "checkoutcom": {
                     "boleto": "Boleto Bancário Ticket",
@@ -591,6 +591,24 @@
             "thank_you_heading": "Thank you!",
             "continue_shopping": "Continue Shopping »",
             "order_status_update_facebook_messenger_heading": "Get instant updates of your order to Messenger"
+        },
+        "pickup": {
+            "summary_heading": "Store pickup",
+            "fulfillment_label": "How would you like to receive your order?",
+            "shipping_action": "Ship my order",
+            "pickup_action": "Pick up in store",
+            "whole_order_text": "All physical items in your order will be collected at this location.",
+            "location_label": "Pickup location",
+            "loading_text": "Checking pickup availability…",
+            "cart_changed": "Your cart changed. Please confirm your pickup location again.",
+            "availability_error": "We couldn’t check pickup availability. Try again or choose shipping.",
+            "save_error": "We couldn’t save your pickup choice. Please try again.",
+            "switch_error": "We couldn’t switch to shipping. Please try again.",
+            "confirm_again": "Please confirm your pickup location before continuing.",
+            "unavailable_text": "Pickup is unavailable for this cart. Please choose shipping.",
+            "retry_action": "Try again",
+            "directions_action": "Directions",
+            "totals_text": "Your order total will update after you continue."
         }
     }
 }

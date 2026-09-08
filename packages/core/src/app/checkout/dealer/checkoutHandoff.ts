@@ -335,6 +335,11 @@ const hasMatchingConsignment = (
   }
 
   const consignments = checkoutState.data.getConsignments?.() || [];
+  // A pickup store may share the selected dealer's address. Native fulfilment
+  // wins over destination matching, including after a stale-revision refresh.
+  if (consignments.some(({ selectedPickupOption }) => selectedPickupOption)) {
+    return false;
+  }
   const activeItemIds = new Set(cart.lineItems.physicalItems.map((item) => String(item.id)));
   const requiredItemIds = itemIds.filter((itemId) => activeItemIds.has(itemId));
 
@@ -481,6 +486,11 @@ export const createCheckoutHandoffPublisher = (
       );
     }
 
+    if (checkoutState.data.getCart()?.id === activeContext.cartId &&
+        checkoutState.data.getConsignments()?.some(({ selectedPickupOption }) => selectedPickupOption)) {
+      return true;
+    }
+
     if (intent.previousDealerId === undefined || !intent.previousDestination) {
       return false;
     }
@@ -530,13 +540,16 @@ export const createCheckoutHandoffPublisher = (
 
       if (
         intent.active &&
-        !hasMatchingConsignment(
+        (!hasMatchingConsignment(
           confirmedCheckoutState || dependencies.getCheckoutState(),
           activeContext.cartId,
           intent.destination,
           intent.itemIds,
           dependencies.matchesDestination,
-        )
+        ) || !hasMatchingConsignment(
+          dependencies.getCheckoutState(), activeContext.cartId, intent.destination,
+          intent.itemIds, dependencies.matchesDestination,
+        ))
       ) {
         return;
       }

@@ -40,8 +40,11 @@ import {
 } from './paymentMethod';
 
 import appendFFLtoCheckoutNotes from '../order/appendFFLtoCheckoutNotes';
+import { hasNativePickup } from '../checkout/pickup/pickup';
+import stripFFLFromCheckoutNotes from '../order/stripFFLFromCheckoutNotes';
 
 export interface PaymentProps {
+    pickupPreflight?(state: CheckoutSelectors): Promise<void>;
     errorLogger: ErrorLogger;
     isEmbedded?: boolean;
     isUsingMultiShipping?: boolean;
@@ -95,7 +98,7 @@ interface PaymentState {
     validationSchemas: { [key: string]: ObjectSchema<Partial<PaymentFormValues>> | null };
 }
 
-class Payment extends Component<
+export class Payment extends Component<
     PaymentProps & WithCheckoutPaymentProps & WithLanguageProps & AnalyticsContextProps,
     PaymentState
 > {
@@ -460,8 +463,6 @@ class Payment extends Component<
             loadCheckout
         } = this.props;
 
-        const checkoutState = await loadCheckout();
-        const checkout = checkoutState.data.getCheckout();
         const { selectedMethod = defaultMethod, submitFunctions } = this.state;
 
         analyticsTracker.clickPayButton({shouldCreateAccount: values.shouldCreateAccount});
@@ -470,12 +471,30 @@ class Payment extends Component<
             selectedMethod &&
             submitFunctions[getUniquePaymentMethodId(selectedMethod.id, selectedMethod.gateway)];
 
-        if (customSubmit) {
-            return customSubmit(values);
-        }
-
         try {
-            if (this.props.selectedFFL && this.props.fflToOrderComments) {
+            const checkoutState = await loadCheckout();
+            const checkout = checkoutState.data.getCheckout();
+            const isPickup = hasNativePickup(checkoutState.data.getConsignments());
+
+            if (this.props.pickupPreflight) {
+                await this.props.pickupPreflight(checkoutState);
+            } else if (isPickup) {
+                throw new Error('Please confirm your pickup location in Shipping before paying.');
+            }
+
+            if (isPickup && checkout) {
+                const customerMessage = stripFFLFromCheckoutNotes(checkout.customerMessage);
+
+                if (customerMessage !== (checkout.customerMessage || '')) {
+                    await updateCheckout({ customerMessage });
+                }
+            }
+
+            if (customSubmit) {
+                return await customSubmit(values);
+            }
+
+            if (!isPickup && this.props.selectedFFL && this.props.fflToOrderComments) {
                 await appendFFLtoCheckoutNotes(checkout, updateCheckout, this.props.selectedFFL);
             }
 

@@ -178,7 +178,11 @@ const getShippingStepStatus = createSelector(
         const hasOptions = consignments ? hasSelectedShippingOptions(consignments) : false;
         const hasUnassignedItems =
             cart && consignments ? hasUnassignedLineItems(consignments, cart.lineItems) : true;
-        const isComplete = hasAddress && hasOptions && !hasUnassignedItems;
+        const hasPickup = consignments?.length === 1 &&
+            Boolean(consignments[0].selectedPickupOption?.pickupMethodId);
+        // Checkout's shared pickup controller separately requires current
+        // eligibility and explicit confirmation. A store needs no recipient name.
+        const isComplete = (hasAddress || hasPickup) && hasOptions && !hasUnassignedItems;
         const isRequired = itemsRequireShipping(cart, config);
         const isCustomShippingSelected =
             isExperimentEnabled(

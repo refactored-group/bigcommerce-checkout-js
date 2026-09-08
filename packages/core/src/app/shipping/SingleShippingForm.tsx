@@ -105,6 +105,12 @@ class SingleShippingForm extends PureComponent<
     };
 
     private debouncedUpdateAddress: any;
+    private isUnmounted = false;
+
+    componentWillUnmount(): void {
+        this.isUnmounted = true;
+        this.debouncedUpdateAddress.cancel();
+    }
 
     constructor(
         props: SingleShippingFormProps & WithLanguageProps & FormikProps<SingleShippingFormValues>,
@@ -115,6 +121,7 @@ class SingleShippingForm extends PureComponent<
 
         this.debouncedUpdateAddress = debounce(
             async (address: Address, includeShippingOptions: boolean) => {
+                if (this.isUnmounted) { return; }
                 try {
                     await updateAddress(address, {
                         params: {
@@ -124,11 +131,13 @@ class SingleShippingForm extends PureComponent<
                         },
                     });
 
-                    if (includeShippingOptions) {
+                    if (includeShippingOptions && !this.isUnmounted) {
                         this.setState({ hasRequestedShippingOptions: true });
                     }
                 } finally {
-                    this.setState({ isUpdatingShippingData: false });
+                    if (!this.isUnmounted) {
+                        this.setState({ isUpdatingShippingData: false });
+                    }
                 }
             },
             props.shippingAutosaveDelay ?? SHIPPING_AUTOSAVE_DELAY,

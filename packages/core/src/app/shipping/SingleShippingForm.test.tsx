@@ -66,6 +66,16 @@ describe('SingleShippingForm', () => {
         return render(createSingleShippingFormComponent(props));
     };
 
+    it('cancels queued address writes when the shipping form unmounts for pickup', async () => {
+        const updateAddress = jest.fn();
+        const { unmount } = renderSingleShippingFormComponent({ updateAddress });
+        await userEvent.clear(screen.getByTestId('addressLine1Input-text'));
+        await userEvent.keyboard('Pickup instead');
+        unmount();
+        await new Promise((resolve) => setTimeout(resolve, waitingDelay));
+        expect(updateAddress).not.toHaveBeenCalled();
+    });
+
     it('calls updateAddress with last event during a given timeframe', async () => {
         const updateAddress = jest.fn();
 
