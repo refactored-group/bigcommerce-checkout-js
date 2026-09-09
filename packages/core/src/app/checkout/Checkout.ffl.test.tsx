@@ -1,7 +1,9 @@
 import { Address } from '@bigcommerce/checkout-sdk';
+import React from 'react';
 
 import { Checkout } from './Checkout';
 import CheckoutStepType from './CheckoutStepType';
+import { FulfillmentChoice } from './pickup/PickupShipping';
 
 const customerAddress = {
   address1: '100 Customer Way',
@@ -75,6 +77,37 @@ const makeCheckout = () => {
 };
 
 describe('Checkout FFL lifecycle', () => {
+  it.each([
+    ['regular', false, false, false],
+    ['firearm', true, false, false],
+    ['ammo', false, true, true],
+    ['ammo without subscription', false, true, false],
+    ['mixed', true, true, true],
+  ])('gates pickup for %s carts with the store setting', (_name, firearm, ammo, subscription) => {
+    const { checkout } = makeCheckout();
+    const subject = checkout as any;
+    subject.isPickupSessionBlocked = () => false;
+    subject.renderShippingStep = jest.fn(() => <div>Shipping form</div>);
+    subject.renderDealerShippingStep = jest.fn(() => <div>Dealer form</div>);
+    subject.state = {
+      ...checkout.state,
+      fflLineItems: firearm ? [{}] : [],
+      fflStateRestrictedItems: ammo ? [{}] : [],
+      withAmmoSubscription: subscription,
+    };
+    const step = { type: CheckoutStepType.Shipping };
+
+    for (const enabled of [false, true]) {
+      subject.state.enableInStorePickup = enabled;
+      const rendered = subject.renderDeliveryStep(step);
+      const offer = rendered.props.children.props.children[0];
+      expect(Boolean(offer)).toBe(enabled);
+      if (enabled) { expect(offer.type).toBe(FulfillmentChoice); }
+    }
+    expect(firearm || (ammo && subscription)
+      ? subject.renderDealerShippingStep : subject.renderShippingStep).toHaveBeenCalled();
+  });
+
   it('owns one coordinator and an identity-scoped confirmed route across Shipping renders', () => {
     const { checkout, props } = makeCheckout();
     const coordinator = (checkout as any).fflConsignmentCoordinator;

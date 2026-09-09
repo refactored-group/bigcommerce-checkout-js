@@ -57,6 +57,7 @@ const setup = () => {
   const handoffPublisher = { configure: jest.fn(), dispose: jest.fn(), publish: jest.fn() };
   const coordinator = createFflConsignmentCoordinator({ ...sdk, handoffPublisher });
   const deps = {
+    isEnabled: jest.fn(() => true),
     coordinator,
     getState: () => state,
     onChange: jest.fn(async () => undefined),
@@ -91,6 +92,59 @@ const setup = () => {
 };
 
 describe('shared native pickup', () => {
+  it('does not discover, select, or confirm pickup when disabled', async () => {
+    const { controller, deps, sdk, state } = setup();
+    deps.isEnabled.mockReturnValue(false);
+
+    controller.observe(true);
+    await controller.refresh();
+    await controller.choosePickup();
+    controller.chooseMethod(choice.id);
+    await controller.confirm();
+    await controller.preflight(state);
+
+    expect(deps.discover).not.toHaveBeenCalled();
+    expect(sdk.createConsignments).not.toHaveBeenCalled();
+    expect(sdk.updateConsignment).not.toHaveBeenCalled();
+    expect(controller.isPickup()).toBe(false);
+    expect(controller.state.draftMethodId).toBeUndefined();
+    expect(deps.onConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('blocks saved pickup after disabling and lets the shopper return to shipping', async () => {
+    const { controller, deps, state, sdk } = setup();
+    controller.observe(true);
+    await flush();
+    await controller.choosePickup();
+    await controller.confirm();
+    expect(controller.isReady()).toBe(true);
+
+    deps.isEnabled.mockReturnValue(false);
+    deps.discover.mockClear();
+    controller.reset();
+    controller.observe(true);
+    await flush();
+
+    expect(controller.isPickup()).toBe(true);
+    expect(controller.isReady()).toBe(false);
+    expect(controller.state.message).toBe('disabled');
+    expect(controller.state.choices).toEqual([]);
+    await expect(controller.preflight(state)).rejects.toThrow('Choose shipping');
+    expect(deps.discover).not.toHaveBeenCalled();
+
+    deps.settleShipping.mockRejectedValueOnce(new Error('Still updating'));
+    await controller.chooseShipping();
+    controller.observe(true);
+    expect(controller.state.message).toBe('switch_error');
+    expect(controller.isPickup()).toBe(true);
+
+    await controller.chooseShipping();
+    expect(sdk.deleteConsignment).toHaveBeenCalled();
+    expect(deps.onShipping).toHaveBeenCalled();
+    expect(controller.isPickup()).toBe(false);
+    await expect(controller.preflight(state)).resolves.toBeUndefined();
+  });
+
   it.each(['idle', 'loading'])(
     'accepts pickup during %s discovery and waits for eligibility before confirming',
     async (status) => {

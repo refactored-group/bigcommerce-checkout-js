@@ -605,6 +605,7 @@
             "save_error": "We couldn’t save your pickup choice. Please try again.",
             "switch_error": "We couldn’t switch to shipping. Please try again.",
             "confirm_again": "Please confirm your pickup location before continuing.",
+            "disabled": "In-store pickup is no longer available. Choose shipping to continue.",
             "unavailable_text": "Pickup is unavailable for this cart. Please choose shipping.",
             "retry_action": "Try again",
             "directions_action": "Directions",

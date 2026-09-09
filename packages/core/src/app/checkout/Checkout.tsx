@@ -65,6 +65,7 @@ import {
 } from './dealer/fflConsignmentCoordinator';
 import { ConfirmedAmmoRoutingSession } from './dealer/utils';
 import PickupController, { initialPickupState, PickupState } from './pickup/PickupController';
+import loadPickupSetting from './pickup/loadPickupSetting';
 import PickupShipping, { FulfillmentChoice } from './pickup/PickupShipping';
 import { hasNativePickup, pickupAddress, pickupCartSignature } from './pickup/pickup';
 import { SUPPORTED_METHODS } from '../customer';
@@ -159,6 +160,7 @@ export interface CheckoutProps {
 
 export interface CheckoutState {
     pickup: PickupState;
+    enableInStorePickup: boolean;
     activeStepType?: CheckoutStepType;
     isBillingSameAsShipping: boolean;
     customerViewType?: CustomerViewType;
@@ -227,6 +229,7 @@ export class Checkout extends Component<
 > {
     state: CheckoutState = {
         pickup: { ...initialPickupState },
+        enableInStorePickup: false,
         selectedFFL: null,
         requiresFreshFflSelection: false,
         fflLineItems: [],
@@ -275,6 +278,7 @@ export class Checkout extends Component<
     private shippingOrderCommentDraft?: string;
     private classifiedCartSignature?: string;
     private pickupController = new PickupController({
+        isEnabled: () => this.state.enableInStorePickup,
         coordinator: this.fflConsignmentCoordinator,
         getState: () => this.props.getCheckoutState(),
         updateCheckout: (body) => this.props.updateCheckout(body),
@@ -513,6 +517,7 @@ export class Checkout extends Component<
             const errorFlashMessages = data.getFlashMessages('error') || [];
             const storeHash = data.getConfig()?.storeProfile.storeHash || '';
             this.setState({ storeHash });
+            const pickupSetting = loadPickupSetting(storeHash, (error) => this.props.errorLogger.log(error));
 
             if (errorFlashMessages.length) {
                 const { language } = this.props;
@@ -600,6 +605,8 @@ export class Checkout extends Component<
                 hasMultiShippingEnabled &&
                 isUsingMultiShipping(consignments, cart.lineItems);
 
+            const enableInStorePickup = await pickupSetting;
+            await new Promise<void>((resolve) => this.setState({ enableInStorePickup }, resolve));
             this.pickupInitialized = true;
             this.pickupController.observe(false);
 
@@ -810,7 +817,8 @@ export class Checkout extends Component<
         // split. Only a shopper's explicit choice makes that dealer flow multi-shipping.
         const multiShipping = this.state.isMultiShippingMode &&
             (!isDealer || this.hasExplicitMultiShippingChoice);
-        const canDiscoverPickup = !multiShipping && !this.isPickupSessionBlocked();
+        const canDiscoverPickup = this.state.enableInStorePickup &&
+            !multiShipping && !this.isPickupSessionBlocked();
         const isCheckingPickup = pickup.status === 'idle' || pickup.status === 'loading';
         const hasPickupChoices = pickup.status === 'ready' && pickup.choices.length > 0;
         const offer = canDiscoverPickup && (isCheckingPickup || hasPickupChoices);

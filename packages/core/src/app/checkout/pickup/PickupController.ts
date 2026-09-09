@@ -14,7 +14,7 @@ export interface PickupState {
   draftMethodId?: number;
   confirmedSignature?: string;
   transitioning: boolean;
-  message?: 'cart_changed' | 'availability_error' | 'save_error' | 'switch_error' | 'confirm_again';
+  message?: 'cart_changed' | 'availability_error' | 'save_error' | 'switch_error' | 'confirm_again' | 'disabled';
 }
 
 export const initialPickupState: PickupState = {
@@ -25,6 +25,7 @@ export const initialPickupState: PickupState = {
 };
 
 interface Dependencies {
+  isEnabled(): boolean;
   coordinator: FflConsignmentCoordinator;
   getState(): CheckoutSelectors;
   onChange(state: PickupState): Promise<void>;
@@ -88,6 +89,7 @@ export default class PickupController {
 
   isReady(state = this.deps.getState()): boolean {
     return (
+      this.deps.isEnabled() &&
       this.state.intent === 'pickup' &&
       !this.state.transitioning &&
       this.state.status === 'ready' &&
@@ -123,9 +125,31 @@ export default class PickupController {
         intent: 'pickup',
         draftMethodId: native.selectedPickupOption?.pickupMethodId,
         confirmedSignature: undefined,
-        message: 'confirm_again',
+        message: this.deps.isEnabled() ? 'confirm_again' : 'disabled',
       });
       this.deps.onRequireDelivery();
+    }
+
+    // Keep a saved pickup consignment visible for recovery, but require the
+    // shopper to switch to shipping when the store no longer offers pickup.
+    if (!this.deps.isEnabled()) {
+      const message = this.state.message === 'switch_error' ? 'switch_error' : 'disabled';
+
+      if (this.isPickup(state) && (
+        this.state.status !== 'ready' || this.state.message !== message || this.state.choices.length > 0
+      )) {
+        this.abort?.abort();
+        void this.change({
+          status: 'ready',
+          choices: [],
+          draftMethodId: undefined,
+          confirmedSignature: undefined,
+          message,
+        });
+        this.deps.onRequireDelivery();
+      }
+
+      return;
     }
 
     if (changed && this.isPickup(state)) {
@@ -142,7 +166,7 @@ export default class PickupController {
   async refresh(): Promise<void> {
     const cart = this.deps.getState().data.getCart();
 
-    if (!cart || this.disposed) {
+    if (!cart || this.disposed || !this.deps.isEnabled()) {
       return;
     }
 
@@ -163,6 +187,7 @@ export default class PickupController {
       if (
         abort.signal.aborted ||
         this.disposed ||
+        !this.deps.isEnabled() ||
         signature !== pickupCartSignature(this.deps.getState().data.getCart())
       ) {
         return;
@@ -197,6 +222,7 @@ export default class PickupController {
 
   async choosePickup(message?: string): Promise<void> {
     if (
+      !this.deps.isEnabled() ||
       this.state.transitioning ||
       this.state.status === 'error' ||
       (this.state.status === 'ready' && !this.state.choices.length)
@@ -233,7 +259,7 @@ export default class PickupController {
   }
 
   chooseMethod(draftMethodId: number): void {
-    if (!this.state.transitioning) {
+    if (this.deps.isEnabled() && !this.state.transitioning) {
       void this.change({ draftMethodId, confirmedSignature: undefined, message: undefined });
     }
   }
@@ -252,7 +278,7 @@ export default class PickupController {
     const { draftMethodId, signature, status, transitioning, choices } = this.state;
     const cart = this.deps.getState().data.getCart();
 
-    if (transitioning || status !== 'ready' || !draftMethodId || !signature || !cart) {
+    if (!this.deps.isEnabled() || transitioning || status !== 'ready' || !draftMethodId || !signature || !cart) {
       return;
     }
 
@@ -349,6 +375,12 @@ export default class PickupController {
     // props still contain a previously selected FFL.
     await this.cleanComments();
     this.deps.coordinator.deactivateHandoff();
+
+    if (!this.deps.isEnabled()) {
+      this.observe(false);
+      this.deps.onRequireDelivery();
+      throw new Error('In-store pickup is no longer available. Choose shipping to continue.');
+    }
 
     if (!this.isReady(this.deps.getState())) {
       this.observe(true);
