@@ -1989,6 +1989,7 @@ export class DealerShipping extends React.PureComponent<
             shouldDisableSubmit={this.shouldDisableSubmit()}
             shouldShowOrderComments={shouldShowOrderComments}
             shouldShowShippingOptions={
+              !this.requiresExplicitDealerSelection() &&
               !this.isAmmoStateSelectionPending() &&
               !hasUnassignedLineItems(consignments, cart.lineItems)
             }

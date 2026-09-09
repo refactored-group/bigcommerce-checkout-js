@@ -334,6 +334,21 @@ const makeAmmoOnlySubject = () => {
   return result;
 };
 
+const getShippingFooterProps = (subject: DealerShipping) => {
+  const previousLodashGlobal = (global as any)._;
+
+  try {
+    (global as any)._ = { groupBy };
+
+    return subject
+      .render()
+      .props.children.find((child: any) => child?.props?.shouldShowShippingOptions !== undefined)
+      .props;
+  } finally {
+    (global as any)._ = previousLodashGlobal;
+  }
+};
+
 describe('DealerShipping ammo reconciliation', () => {
   beforeEach(() => {
     global.fetch = jest.fn(() => new Promise(() => undefined)) as jest.Mock;
@@ -994,10 +1009,56 @@ describe('DealerShipping ammo reconciliation', () => {
     };
 
     expect((subject as any).shouldDisableSubmit()).toBe(true);
+    expect(getShippingFooterProps(subject).shouldShowShippingOptions).toBe(false);
 
     await (subject as any).handleMultiShippingSubmit({ orderComment: '' });
 
     expect(props.navigateNextStep).not.toHaveBeenCalled();
+  });
+
+  it('hides a signed-in firearm shipment until the selected dealer owns its items', async () => {
+    const { props, subject } = makeSubject(false, (nextProps) => {
+      nextProps.stateRestrictedConsignmentItems = [];
+      nextProps.cart.lineItems.physicalItems = [
+        { addedByPromotion: false, id: 'gun-1', parentId: null, quantity: 1 },
+      ];
+      nextProps.consignments = [
+        {
+          id: 'saved-address-consignment',
+          lineItemIds: ['gun-1'],
+          shippingAddress: customerAddress,
+        },
+      ];
+    });
+    subject.state = { ...subject.state, selectedDealer: null };
+
+    expect(getShippingFooterProps(subject).shouldShowShippingOptions).toBe(false);
+
+    // A dealer choice alone must not expose rates for the old customer address
+    // while the consignment is still waiting to move to the selected dealer.
+    subject.state = { ...subject.state, selectedDealer: dealerAddress };
+
+    expect(getShippingFooterProps(subject).shouldShowShippingOptions).toBe(false);
+
+    await (subject as any).selectDealer(dealerAddress);
+
+    expect(props.consignments).toEqual([
+      expect.objectContaining({
+        lineItemIds: ['gun-1'],
+        shippingAddress: expect.objectContaining({ address1: dealerAddress.address1 }),
+      }),
+    ]);
+    expect(getShippingFooterProps(subject).shouldShowShippingOptions).toBe(true);
+  });
+
+  it('shows direct-shipping ammo rates after the customer confirms an unrestricted address', async () => {
+    const { subject } = makeAmmoOnlySubject();
+
+    await (subject as any).handleSelectAddress(customerAddress, 'ammo-1', 'ammo-1');
+
+    expect(subject.state.selectedDealer).toBeNull();
+    expect(subject.state.ammoStateFFLRequired).toBe(false);
+    expect(getShippingFooterProps(subject).shouldShowShippingOptions).toBe(true);
   });
 
   it('allows checkout after a selected dealer and customer address both have shipping methods', async () => {
@@ -1047,6 +1108,7 @@ describe('DealerShipping ammo reconciliation', () => {
 
     expect((subject as any).requiresExplicitDealerSelection()).toBe(false);
     expect((subject as any).shouldDisableSubmit()).toBe(false);
+    expect(getShippingFooterProps(subject).shouldShowShippingOptions).toBe(true);
 
     await (subject as any).handleMultiShippingSubmit({ orderComment: '' });
 
