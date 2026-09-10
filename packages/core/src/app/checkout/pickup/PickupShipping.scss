@@ -1,39 +1,109 @@
+@import '../../ui/Base';
+
 .pickup-choice,
+.pickup-search,
 .pickup-locations {
   border: 0;
   margin: 0 0 1.5rem;
   padding: 0;
 }
 
-.pickup-radio {
-  align-items: flex-start;
-  cursor: pointer;
+.pickup-search-controls {
+  flex-wrap: wrap;
+  gap: spacing('half');
+  max-width: 28rem;
+
+  .form-input {
+    flex: 1 1 8rem;
+    min-width: 0;
+  }
+
+  .button {
+    flex: 1 0 auto;
+    margin: 0;
+  }
+}
+
+.pickup-fulfillment-option {
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.pickup-location-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  > .pickup-location-card {
+    border-radius: $global-radius;
+    margin: spacing('half') 0 0;
+    overflow: hidden;
+  }
+}
+
+.pickup-location-option {
+  .form-checklist-checkbox ~ .form-label {
+    cursor: pointer;
+  }
+}
+
+.pickup-location-help {
+  font-size: 0.875rem;
+  margin: 0 0 1rem;
+}
+
+.pickup-location-heading {
+  align-items: baseline;
   display: flex;
-  gap: 0.75rem;
-  padding: 0.75rem 0;
-
-  input {
-    flex-shrink: 0;
-    margin-top: 0.25rem;
-  }
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  justify-content: space-between;
+  line-height: 1.4;
 }
 
-.pickup-location {
-  border-bottom: 1px solid #ddd;
-  padding: 0.5rem 0 1rem;
-
-  &:focus-within {
-    outline: 2px solid currentColor;
-    outline-offset: 3px;
-  }
+.pickup-location-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.pickup-detail {
+.pickup-method-name {
+  font-size: 0.875rem;
+  font-weight: normal;
+}
+
+.pickup-distance {
+  font-size: 0.8125rem;
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.pickup-address {
   display: block;
-  margin-top: 0.25rem;
-  white-space: pre-line;
+  font-size: 0.875rem;
+  font-weight: normal;
+  line-height: 1.5;
+  margin-top: 0.375rem;
+  overflow-wrap: anywhere;
+  > a {
+    text-decoration: underline;
+  }
 }
 
-.pickup-directions {
-  margin-left: 1.75rem;
+.pickup-collection-time {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: normal;
+  line-height: 1.5;
+  margin-top: 0.375rem;
+}
+
+.pickup-instructions {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: normal;
+  line-height: 1.5;
+  margin-top: 0.75rem;
+  overflow-wrap: anywhere;
+  white-space: pre-line;
 }

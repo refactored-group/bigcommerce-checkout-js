@@ -6,104 +6,157 @@ const cart = {
   id: 'cart',
   lineItems: {
     physicalItems: [
-      { id: 'a', variantId: 10, quantity: 2 },
-      { id: 'b', variantId: 10, quantity: 1 },
-      { id: 'c', variantId: 20, quantity: 1 },
+      { variantId: 10, quantity: 2 },
+      { variantId: 10, quantity: 1 },
+      { variantId: 20, quantity: 1 },
     ],
   },
 } as Cart;
-const location = (id: number) => ({
+const center = { latitude: 30, longitude: -97 };
+const location = (id: number, latitude = 30 + id / 100) => ({
   entityId: id,
   label: `Store ${id}`,
-  address: { latitude: 0, longitude: 0, address1: '1 Main', city: 'Austin' },
+  address: { latitude, longitude: -97 },
 });
-const option = (id: number, locationId: number, quantity = 3) => ({
-  pickupMethod: {
-    id,
-    locationId,
-    displayName: 'Pickup',
-    collectionInstructions: 'Bring order number',
-  },
+const option = (locationId: number, id = locationId, complete = true) => ({
+  pickupMethod: { id, locationId, displayName: `Method ${id}` },
   availableItems: [
-    { variantId: 10, quantity },
+    { variantId: 10, quantity: complete ? 3 : 2 },
     { variantId: 20, quantity: 1 },
   ],
 });
-const response = (body: unknown) => ({ ok: true, json: async () => body });
-const locationsResponse = (nodes: unknown[], hasNextPage = false) =>
+const response = (body: unknown, ok = true) =>
+  Promise.resolve({ ok, json: async () => body } as Response);
+const metadata = (nodes: unknown[], next: string | null = null) =>
   response({
     data: {
       inventory: {
-        locations: { edges: nodes.map((node) => ({ node })), pageInfo: { hasNextPage } },
+        locations: {
+          edges: nodes.map((node) => ({ node })),
+          pageInfo: { hasNextPage: !!next, endCursor: next },
+        },
       },
     },
   });
+const native = (options: unknown[]) => response({ results: [{ pickupOptions: options }] });
+const originalFetch = global.fetch;
+let fetchMock: jest.Mock;
 
 beforeEach(() => {
-  localStorage.setItem('storefrontApiToken', 'test-token');
+  fetchMock = jest.fn();
+  global.fetch = fetchMock;
+  localStorage.setItem('storefrontApiToken', 'token');
 });
 afterEach(() => {
+  global.fetch = originalFetch;
   localStorage.clear();
-  jest.restoreAllMocks();
 });
 
-it('aggregates variants, deduplicates overlapping searches, and excludes partial carts', async () => {
-  global.fetch = jest
-    .fn()
-    .mockResolvedValueOnce(locationsResponse([location(2), location(1)]))
-    .mockResolvedValueOnce(
-      response({ results: [{ pickupOptions: [option(7, 2), option(8, 1), option(9, 1, 2)] }] }),
+it('uses one 200-mile whole-cart search and returns five nearest distinct stores from eleven', async () => {
+  const ids = Array.from({ length: 11 }, (_, i) => 11 - i);
+  fetchMock
+    .mockImplementationOnce(() => native(ids.map((id) => option(id))))
+    .mockImplementationOnce(() => metadata(ids.map((id) => location(id))));
+  const choices = await discoverPickup(cart, center, jest.fn());
+  expect(choices.map(({ location }) => location.entityId)).toEqual([1, 2, 3, 4, 5]);
+  expect(choices[0].distanceMiles).toBeCloseTo(0.691, 2);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    searchArea: { radius: { value: 200, unit: 'MI' }, coordinates: center },
+    items: [
+      { variantId: 10, quantity: 3 },
+      { variantId: 20, quantity: 1 },
+    ],
+  });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).variables.ids).toEqual(ids);
+});
+
+it('retains multiple methods at the same store, deduplicates methods, and excludes partial carts', async () => {
+  fetchMock
+    .mockImplementationOnce(() =>
+      native([
+        option(1),
+        option(1),
+        option(1, 21),
+        option(2, 22, false),
+        ...[2, 3, 4, 5, 6].map((id) => option(id)),
+      ]),
     )
-    .mockResolvedValueOnce(
-      response({ results: [{ pickupOptions: [option(8, 1), option(7, 2), option(10, 999)] }] }),
+    .mockImplementationOnce(() => metadata([1, 2, 3, 4, 5, 6].map((id) => location(id))));
+  const choices = await discoverPickup(cart, center, jest.fn());
+  expect(choices.map(({ id }) => id)).toEqual([1, 21, 2, 3, 4, 5]);
+});
+
+it('reads subsequent metadata pages rather than failing on more than ten stores', async () => {
+  fetchMock
+    .mockImplementationOnce(() => native([option(1), option(2)]))
+    .mockImplementationOnce(() => metadata([location(1)], 'page-2'))
+    .mockImplementationOnce(() => metadata([location(2)]));
+  const signal = new AbortController().signal;
+  expect(await discoverPickup(cart, center, jest.fn(), signal)).toHaveLength(2);
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body).variables.after).toBe('page-2');
+  for (const [, request] of fetchMock.mock.calls) {
+    expect(request.signal).toBe(signal);
+  }
+});
+
+it('batches metadata for more than fifty eligible stores', async () => {
+  const ids = Array.from({ length: 51 }, (_, i) => i + 1);
+  fetchMock
+    .mockImplementationOnce(() => native(ids.map((id) => option(id))))
+    .mockImplementationOnce(() => metadata(ids.slice(0, 50).map((id) => location(id))))
+    .mockImplementationOnce(() => metadata([location(51)]));
+  expect(await discoverPickup(cart, center, jest.fn())).toHaveLength(5);
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body).variables).toEqual({ ids: [51], after: null });
+});
+
+it('does not widen an empty search or fetch location metadata for no eligible methods', async () => {
+  fetchMock.mockImplementationOnce(() => native([]));
+  expect(await discoverPickup(cart, center, jest.fn())).toEqual([]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it('excludes stores outside 200 miles and locations with unusable coordinates', async () => {
+  fetchMock
+    .mockImplementationOnce(() => native([option(1), option(2), option(3)]))
+    .mockImplementationOnce(() =>
+      metadata([location(1, 40), location(2, null as any), location(3)]),
     );
-  const choices = await discoverPickup(cart, jest.fn());
-  expect(choices.map(({ id }) => id)).toEqual([8, 7]);
-  expect(choices[0].collectionInstructions).toBe('Bring order number');
-  const payload = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
-  expect(payload.items).toEqual([
-    { variantId: 10, quantity: 3 },
-    { variantId: 20, quantity: 1 },
-  ]);
-  expect(payload.searchArea.coordinates).toEqual({ latitude: 0, longitude: 0 });
-  expect(payload).not.toHaveProperty('shippingAddress');
-});
-
-it('returns no choices for a store with no locations or no configured eligible pickup methods', async () => {
-  global.fetch = jest.fn().mockResolvedValueOnce(locationsResponse([]));
-  await expect(discoverPickup(cart, jest.fn())).resolves.toEqual([]);
-  expect(global.fetch).toHaveBeenCalledTimes(1);
-
-  (global.fetch as jest.Mock).mockReset();
-  (global.fetch as jest.Mock)
-    .mockResolvedValueOnce(locationsResponse([location(1)]))
-    .mockResolvedValueOnce(response({ results: [{ pickupOptions: [] }] }));
-  await expect(discoverPickup(cart, jest.fn())).resolves.toEqual([]);
-});
-
-it('rejects partial discovery and location counts beyond the MVP limit', async () => {
-  global.fetch = jest.fn().mockResolvedValueOnce(locationsResponse([location(1)], true));
-  await expect(discoverPickup(cart, jest.fn())).rejects.toThrow('at most 10');
-  expect(global.fetch).toHaveBeenCalledTimes(1);
-  (global.fetch as jest.Mock).mockReset();
-  (global.fetch as jest.Mock)
-    .mockResolvedValueOnce(locationsResponse([location(1), location(2)]))
-    .mockResolvedValueOnce(response({ results: [{ pickupOptions: [option(7, 1)] }] }))
-    .mockRejectedValueOnce(new Error('offline'));
-  await expect(discoverPickup(cart, jest.fn())).rejects.toThrow('offline');
-});
-
-it('skips missing coordinates with a diagnostic and fails on GraphQL errors', async () => {
   const log = jest.fn();
-  global.fetch = jest
-    .fn()
-    .mockResolvedValueOnce(
-      locationsResponse([{ ...location(1), address: { latitude: null, longitude: null } }]),
-    );
-  await expect(discoverPickup(cart, log)).resolves.toEqual([]);
-  expect(log).toHaveBeenCalledWith(expect.any(Error));
-  (global.fetch as jest.Mock).mockResolvedValueOnce(
-    response({ errors: [{ message: 'unauthorized' }] }),
-  );
-  await expect(discoverPickup(cart, log)).rejects.toThrow('load pickup locations');
+  expect((await discoverPickup(cart, center, log)).map(({ id }) => id)).toEqual([3]);
+  expect(log).toHaveBeenCalledTimes(1);
+});
+
+it.each([() => response({}, false), () => response({ results: [{}] })])(
+  'rejects failed or malformed eligibility responses',
+  async (failure) => {
+    fetchMock.mockImplementationOnce(failure);
+    await expect(discoverPickup(cart, center, jest.fn())).rejects.toThrow();
+  },
+);
+
+it.each([
+  () => response({ errors: [{ message: 'denied' }] }),
+  () => metadata([]),
+  () =>
+    response({
+      data: { inventory: { locations: { edges: [], pageInfo: { hasNextPage: true } } } },
+    }),
+])(
+  'does not show misleading partial results when metadata fails or is incomplete',
+  async (failure) => {
+    fetchMock.mockImplementationOnce(() => native([option(1)])).mockImplementationOnce(failure);
+    await expect(discoverPickup(cart, center, jest.fn())).rejects.toThrow();
+  },
+);
+
+it('does not discover digital-only carts', async () => {
+  expect(
+    await discoverPickup(
+      { ...cart, lineItems: { physicalItems: [] } } as unknown as Cart,
+      center,
+      jest.fn(),
+    ),
+  ).toEqual([]);
+  expect(fetchMock).not.toHaveBeenCalled();
 });

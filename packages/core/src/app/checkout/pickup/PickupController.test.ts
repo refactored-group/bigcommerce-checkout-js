@@ -4,6 +4,7 @@ import { createFflConsignmentCoordinator } from '../dealer/fflConsignmentCoordin
 
 import { matchesPickup, PickupChoice, pickupCartSignature } from './pickup';
 import PickupController from './PickupController';
+import { InvalidPickupZipError } from './resolvePickupZip';
 
 const choice = { id: 7, location: { entityId: 3 }, displayName: 'Collect' } as PickupChoice;
 const flush = async () => {
@@ -70,6 +71,7 @@ const setup = () => {
       customerMessage = body.customerMessage;
       return state;
     }),
+    resolveZip: jest.fn(async () => ({ latitude: 30, longitude: -97 })),
     discover: jest.fn(async () => [choice]),
   };
   const controller = new PickupController(deps);
@@ -99,6 +101,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await controller.refresh();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     controller.chooseMethod(choice.id);
     await controller.confirm();
     await controller.preflight(state);
@@ -116,6 +120,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     expect(controller.isReady()).toBe(true);
 
@@ -145,41 +151,34 @@ describe('shared native pickup', () => {
     await expect(controller.preflight(state)).resolves.toBeUndefined();
   });
 
-  it.each(['idle', 'loading'])(
-    'accepts pickup during %s discovery and waits for eligibility before confirming',
-    async (status) => {
-      const { controller, deps, sdk } = setup();
-      let resolveDiscovery: (choices: PickupChoice[]) => void = () => undefined;
-      deps.discover.mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveDiscovery = resolve;
-          }),
-      );
-      if (status === 'loading') {
-        controller.observe(true);
-        await flush();
-      }
+  it('starts empty and never infers a ZIP or searches before submission', async () => {
+    const { controller, deps, sdk } = setup();
+    controller.observe(true);
+    await flush();
+    await controller.choosePickup();
+    expect(controller.state.zip).toBe('');
+    expect(controller.state.status).toBe('idle');
+    expect(deps.resolveZip).not.toHaveBeenCalled();
+    expect(deps.discover).not.toHaveBeenCalled();
+    await controller.confirm();
+    expect(sdk.createConsignments).not.toHaveBeenCalled();
+    controller.setZip('02108');
+    expect(deps.resolveZip).not.toHaveBeenCalled();
+    await controller.search();
+    expect(deps.resolveZip).toHaveBeenCalledWith('02108', expect.anything());
+    expect(deps.discover).toHaveBeenCalledWith(
+      expect.anything(),
+      { latitude: 30, longitude: -97 },
+      deps.log,
+      expect.anything(),
+    );
+    expect(controller.state.draftMethodId).toBe(7);
+    expect(controller.isReady()).toBe(false);
+    await controller.confirm();
+    expect(controller.isReady()).toBe(true);
+  });
 
-      await controller.choosePickup();
-      expect(controller.state.intent).toBe('pickup');
-      expect(controller.state.status).toBe('loading');
-      expect(controller.state.draftMethodId).toBeUndefined();
-      await controller.confirm();
-      expect(sdk.createConsignments).not.toHaveBeenCalled();
-      expect(deps.onConfirmed).not.toHaveBeenCalled();
-      expect(deps.discover).toHaveBeenCalledTimes(1);
-
-      resolveDiscovery([choice]);
-      await flush();
-      expect(controller.state.draftMethodId).toBe(choice.id);
-      expect(controller.isReady()).toBe(false);
-      await controller.confirm();
-      expect(controller.isReady()).toBe(true);
-    },
-  );
-
-  it('keeps shipping selected when the shopper switches back before discovery finishes', async () => {
+  it('ignores an in-flight search when switching to shipping', async () => {
     const { controller, deps, sdk } = setup();
     let resolveDiscovery: (choices: PickupChoice[]) => void = () => undefined;
     deps.discover.mockImplementationOnce(
@@ -188,17 +187,20 @@ describe('shared native pickup', () => {
           resolveDiscovery = resolve;
         }),
     );
-    controller.observe(true);
-    await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    const search = controller.search();
+    await flush();
+    await controller.confirm();
+    expect(controller.state.status).toBe('loading');
+    expect(sdk.createConsignments).not.toHaveBeenCalled();
     await controller.chooseShipping();
     resolveDiscovery([choice]);
-    await flush();
-
+    await search;
     expect(controller.state.intent).toBe('shipping');
-    expect(controller.state.status).toBe('ready');
+    expect(controller.state.status).toBe('idle');
+    expect(controller.state.choices).toEqual([]);
     expect(controller.state.draftMethodId).toBeUndefined();
-    expect(sdk.createConsignments).not.toHaveBeenCalled();
     expect(deps.onConfirmed).not.toHaveBeenCalled();
   });
 
@@ -207,6 +209,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     cart.lineItems.physicalItems = [];
     controller.observe(false);
@@ -217,22 +221,36 @@ describe('shared native pickup', () => {
     expect(deps.onConfirmed).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps initial discovery failure out of ordinary shipping and shows active failures with retry', async () => {
+  it('distinguishes invalid ZIPs, lookup errors, eligibility errors and empty results with recovery', async () => {
     const { controller, deps } = setup();
-    deps.discover.mockRejectedValueOnce(new Error('offline'));
-    controller.observe(true);
-    await flush();
-    expect(controller.state.intent).toBe('shipping');
-    expect(controller.state.message).toBeUndefined();
-    await controller.refresh();
     await controller.choosePickup();
+    controller.setZip('abc');
+    await controller.search();
+    expect(controller.state.searchError).toBe('invalid_zip');
+    expect(deps.resolveZip).not.toHaveBeenCalled();
+    controller.setZip('78701');
+    deps.resolveZip.mockRejectedValueOnce(new InvalidPickupZipError());
+    await controller.search();
+    expect(controller.state.searchError).toBe('invalid_zip');
+    expect(deps.discover).not.toHaveBeenCalled();
+    deps.resolveZip.mockRejectedValueOnce(new Error('offline'));
+    await controller.refresh();
+    expect(controller.state.searchError).toBe('zip_error');
     deps.discover.mockRejectedValueOnce(new Error('offline'));
     await controller.refresh();
-    expect(controller.state.intent).toBe('pickup');
     expect(controller.state.message).toBe('availability_error');
-    expect(controller.isReady()).toBe(false);
+    expect(controller.state.searchError).toBeUndefined();
+    deps.discover.mockResolvedValueOnce([]);
     await controller.refresh();
     expect(controller.state.status).toBe('ready');
+    expect(controller.state.choices).toEqual([]);
+    expect(controller.state.searchedZip).toBe('78701');
+    expect(controller.state.intent).toBe('pickup');
+    expect(controller.isReady()).toBe(false);
+    controller.setZip('02108');
+    await controller.search();
+    await controller.confirm();
+    expect(controller.isReady()).toBe(true);
   });
 
   it('requires an explicit choice for multiple methods and reconfirmation after identity or draft changes', async () => {
@@ -241,6 +259,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     expect(controller.state.draftMethodId).toBeUndefined();
     await controller.confirm();
     expect(deps.onConfirmed).not.toHaveBeenCalled();
@@ -267,6 +287,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     expect(state.data.getCheckout()?.customerMessage).toBe('Shopper note');
     deps.updateCheckout.mockRejectedValueOnce(new Error('offline'));
     await controller.confirm('Updated shopper note');
@@ -276,13 +298,15 @@ describe('shared native pickup', () => {
     expect(controller.isReady()).toBe(true);
   });
 
-  it('discovers without an address and only selects the sole method after entering pickup', async () => {
+  it('selects a sole eligible method after ZIP search and creates whole-cart pickup only on Continue', async () => {
     const { controller, sdk } = setup();
     controller.observe(true);
     await flush();
     expect(controller.state.draftMethodId).toBeUndefined();
     expect(controller.state.intent).toBe('shipping');
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     expect(controller.state.draftMethodId).toBe(7);
     expect(sdk.createConsignments).not.toHaveBeenCalled();
     await controller.confirm();
@@ -310,6 +334,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     expect(sdk.deleteConsignment).toHaveBeenCalledTimes(count === 1 ? 0 : count);
     expect(sdk.updateConsignment).toHaveBeenCalledTimes(count === 1 ? 1 : 0);
@@ -323,6 +349,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     cart.lineItems.physicalItems[1].quantity = 3;
     controller.observe(false);
@@ -353,6 +381,11 @@ describe('shared native pickup', () => {
     expect(controller.isReady()).toBe(false);
     expect(handoffPublisher.publish).toHaveBeenCalledWith({ active: false });
     await expect(controller.preflight(state)).rejects.toThrow();
+    expect(controller.state.zip).toBe('');
+    await controller.confirm();
+    expect(controller.isReady()).toBe(false);
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     await expect(controller.preflight(state)).resolves.toBeUndefined();
   });
@@ -362,6 +395,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     sdk.deleteConsignment.mockRejectedValueOnce(new Error('offline'));
     await controller.chooseShipping();
@@ -383,6 +418,8 @@ describe('shared native pickup', () => {
     controller.observe(true);
     await flush();
     await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
     await controller.confirm();
     expect(controller.isReady()).toBe(false);
     expect(deps.onConfirmed).not.toHaveBeenCalled();
@@ -398,15 +435,70 @@ describe('shared native pickup', () => {
         }),
     );
     controller.observe(true);
+    await controller.choosePickup();
+    controller.setZip('78701');
+    const search = controller.search();
     await flush();
     cart.lineItems.physicalItems[0].quantity = 2;
     deps.discover.mockResolvedValueOnce([]);
     controller.observe(true);
     await flush();
     resolveOld([choice]);
-    await flush();
+    await search;
     expect(controller.state.choices).toEqual([]);
     expect(controller.state.signature).toBe(pickupCartSignature(cart));
+  });
+
+  it('clears confirmation when editing ZIP and ignores older ZIP responses', async () => {
+    const { controller, deps, state } = setup();
+    await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
+    await controller.confirm();
+    expect(controller.isReady()).toBe(true);
+    controller.setZip('02108');
+    expect(controller.state.choices).toEqual([]);
+    expect(controller.isReady()).toBe(false);
+    await expect(controller.preflight(state)).rejects.toThrow();
+    let resolveOld: (choices: PickupChoice[]) => void = () => undefined;
+    deps.discover.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const oldSearch = controller.search();
+    await flush();
+    controller.setZip('84043');
+    deps.discover.mockResolvedValueOnce([{ ...choice, id: 99 }]);
+    await controller.search();
+    resolveOld([choice]);
+    await oldSearch;
+    expect(controller.state.zip).toBe('84043');
+    expect(controller.state.choices.map(({ id }) => id)).toEqual([99]);
+    expect(controller.isReady()).toBe(false);
+  });
+
+  it('does not start discovery after an obsolete ZIP lookup completes', async () => {
+    const { controller, deps } = setup();
+    let resolveOld: (coordinates: { latitude: number; longitude: number }) => void = () =>
+      undefined;
+    deps.resolveZip.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    await controller.choosePickup();
+    controller.setZip('78701');
+    const oldSearch = controller.search();
+    await flush();
+    controller.setZip('02108');
+    await controller.search();
+    resolveOld({ latitude: 0, longitude: 0 });
+    await oldSearch;
+    expect(deps.discover).toHaveBeenCalledTimes(1);
+    expect(controller.state.searchedZip).toBe('02108');
   });
 
   it('rejects incomplete item coverage, duplicate assignment, and mixed native fulfilment', () => {

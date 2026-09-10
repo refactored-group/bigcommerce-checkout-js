@@ -1,25 +1,25 @@
 # Native BigCommerce Store Pickup: MVP Plan
 
-Plan of record, revised 2026-09-08. The MVP is implemented locally in `bigcommerce-checkout-js` on `staging`; merchant acceptance and deployment remain pending. This version uses one shared regular/FFL pickup flow and excludes optional location features from the first release.
+Plan of record, revised 2026-09-09. The MVP is implemented locally in `bigcommerce-checkout-js` on `staging`; merchant acceptance and deployment remain pending. This version uses one shared regular/FFL pickup flow with an explicit ZIP search.
 
 ## Goal
 
 Let a shopper choose one of the merchant's eligible BigCommerce locations and collect every physical item in the order there. Use BigCommerce's native pickup methods, inventory eligibility, consignment, totals, and order fulfilment. Preserve the existing ordinary shipping and FFL shipping flows when the shopper chooses shipping.
 
-The MVP journey is: **choose pickup → choose a location/method → Continue → billing → payment**. Regular, firearm, ammunition, and mixed carts use the same pickup panel and the same commit operation. Each order uses one pickup location; mixed pickup/shipping is out of scope.
+The MVP journey is: **choose pickup → enter ZIP → search → choose a location/method → Continue → billing → payment**. Regular, firearm, ammunition, and mixed carts use the same pickup panel and the same commit operation. Each order uses one pickup location; mixed pickup/shipping is out of scope.
 
 ## MVP scope
 
 | Include in the first release | Defer or exclude |
 | --- | --- |
-| Multiple eligible locations, one chosen per order | ZIP entry, geocoding, distances, nearest sorting/badges, distance endpoint |
-| One flat radio list showing store, address, method, and native collection information | Nested store/method card structures, calculated opening hours, timezone logic |
-| A plain destination-only Directions link | Embedded maps, browser location, driving distance/time |
+| ZIP search within 200 miles, up to five nearest eligible stores, one chosen per order | ZIP prefill, pagination controls, automatic radius expansion |
+| Compact radio cards showing store, address, method, and native collection information | Nested store/method selectors, calculated opening hours, timezone logic |
+| A linked store address opening destination-only directions | Embedded maps, browser location, driving distance/time |
 | One shared pickup panel with commit on Continue | Separate regular/FFL pickup forms or immediate FFL commit on radio selection |
 | Cart-change invalidation and explicit reconfirmation | Automatic background repair of pickup assignments after cart changes |
 | Correct switching, payment gating, comment cleanup, and exclusion from dealer attribution | New scheduling, pickup-person, notification, or dealer-attribution features |
 
-No SDK upgrade, new packages, AutoFFL merchant setting, dealer payload change, or FFL locator change. Merchants configure pickup methods and inventory in BigCommerce. The first rollout supports stores with at most 10 visible inventory locations; verify this during setup instead of silently dropping additional locations and presenting partial discovery as complete.
+No SDK upgrade, new packages, dealer payload change, or FFL locator change. Merchants configure locations, pickup methods, and inventory in BigCommerce, and enable pickup in AutoFFL store settings. Existing stores default off; new stores default on. Discovery has no local ten-location restriction.
 
 ## Native foundation
 
@@ -32,31 +32,31 @@ The installed Checkout SDK is 1.658.1 and already supports pickup consignments. 
 
 ### 1. Arriving at delivery
 
-The existing sign-in/guest and customer-contact experience comes first. At the current shipping step, discover pickup eligibility without asking for a shipping address or ZIP. Ordinary shipping remains usable while that check runs; do not show pickup as available until discovery confirms an eligible method.
+The existing sign-in/guest and customer-contact experience comes first. At the current shipping step, offer pickup when the AutoFFL store setting explicitly enables it. Eligibility is checked only after the shopper selects pickup and submits a ZIP. Ordinary shipping remains available, including after search errors or empty results.
 
-When pickup is available, show a small choice above the form under **How would you like to receive your order?**:
+When pickup is enabled, show a small choice above the form under **How would you like to receive your order?**:
 
 - **Ship my order** — selected by default on a fresh checkout; shows the existing regular or FFL shipping form appropriate to the cart.
 - **Pick up in store** — opens the shared pickup panel.
 
-Use **Delivery** as the outer step heading when the fulfilment choice is shown. A store with no eligible methods or an initial discovery failure keeps its existing checkout form and heading, without an empty pickup selector. Do not automatically put a fresh checkout into pickup mode merely because only one method is eligible.
+Retain the existing outer step heading. A store with no eligible methods shows the empty-search message after ZIP submission. Do not automatically put a fresh checkout into pickup mode merely because only one method is eligible.
 
 Pickup must be available without a shipping address, without a carrier quote, and when the merchant has no carrier rates. A customer buying firearms sees the same pickup choice before needing to select a dealer. Choosing shipping still runs the existing FFL or ammunition routing rules.
 
 ### 2. Choosing pickup
 
-Selecting **Pick up in store** replaces the shipping/dealer form with one location list. The shopper is not asked to enter a home shipping address, choose a carrier, select an FFL, supply a dealer-recipient name, or choose an ammunition shipping state in this panel. Customer contact and billing information are still collected by the normal checkout steps.
+Selecting **Pick up in store** replaces the shipping/dealer form with an initially empty ZIP field, regardless of store count. Do not prefill from customer, billing, shipping, FFL, or pickup addresses. Submitting a five-digit US ZIP finds eligible stores within 200 miles of its center and shows up to five distinct stores nearest first. The shopper is not asked to enter a home shipping address, choose a carrier, select an FFL, supply a dealer-recipient name, or choose an ammunition shipping state in this panel. Customer contact and billing information are still collected by the normal checkout steps.
 
-Display **All physical items in your order will be collected at this location.** Every offered method must cover the whole physical cart. Digital items continue through their existing fulfilment process.
+Display **Choose one store for your order.** Every offered method must cover the whole physical cart. Digital items continue through their existing fulfilment process.
 
 Each radio option shows:
 
-- Store label and full address.
-- Pickup method name, such as in-store or curbside, as configured by the merchant.
-- BigCommerce's collection time description and instructions, when provided.
-- A **Directions** link opening Google Maps for that destination in a separate tab, preserving the checkout. No shopper origin is collected or sent.
+- Store label, a two-line address, and compact approximate distance (for example, **0.8 miles**).
+- Pickup method name, such as in-store or curbside, when it differs from the store label. Suppress duplicate names ignoring case and surrounding whitespace.
+- BigCommerce's collection time description below the address. Show collection instructions in the selected option.
+- The store address links to Google Maps directions for that destination in a separate tab, preserving the checkout. No shopper origin is collected or sent.
 
-Use a stable location/method order. If a store offers two methods, it appears as two labelled radio options with the same address. There is no nested selector. If exactly one eligible method exists across all locations, select it automatically after the shopper enters pickup mode; Continue is still required. If several exist, require a deliberate choice.
+Sort by distance, then stable location/method IDs. The five-store limit preserves all returned eligible methods at those stores. If a store offers two methods, it appears as two labelled radio options with the same address. There is no nested selector. If exactly one eligible method exists across all locations, select it automatically after ZIP search completes; Continue is still required. If several exist, require a deliberate choice.
 
 If the merchant enables order comments, reuse the existing optional order-notes field below the list. Preserve the shopper's notes when moving between pickup and shipping, while keeping generated dealer information out of the pickup form.
 
@@ -90,21 +90,25 @@ A failed switch leaves the shopper in the pickup panel with a retry action. Do n
 
 If items or quantities change after pickup was chosen, return the shopper to Delivery and show **Your cart changed. Please confirm your pickup location again.** Recheck the current cart, but do not automatically change the saved consignment or advance the customer.
 
-If the previous method remains eligible, keep it selected as a draft so the shopper only needs to press Continue again. If it no longer qualifies, clear the draft and show the remaining eligible choices. If none qualify, explain that pickup is unavailable for this cart and offer **Ship my order**. Never silently switch the order to shipping or split it across locations.
+If the previous method remains eligible, keep it selected as a draft so the shopper only needs to press Continue again. If it no longer qualifies, clear the draft and show the remaining eligible choices. If none qualify, keep the ZIP field and show **No pickup locations within 200 miles can fulfill your entire order. Try another ZIP code or choose shipping.** Never silently switch the order to shipping or split it across locations.
 
 Until the shopper successfully confirms a current pickup choice or switches to shipping, payment is blocked. This includes a change detected while the shopper is on the payment step.
 
 ### 7. Reloads and errors
 
-For regular-cart guests and signed-in customers, restore a saved native pickup method, recheck eligibility, and require confirmation in the shared panel before resuming billing/payment. A draft never saved with Continue is not persisted across a reload. The existing guest FFL cleanup remains an accepted MVP exception: those shoppers reselect pickup/location after a reload. Preserve customer-identity cleanup; no new localStorage persistence is added.
+For regular-cart guests and signed-in customers, recognize saved native pickup, require a manually entered ZIP to recheck eligibility, and require confirmation in the shared panel before resuming billing/payment. A draft never saved with Continue is not persisted across a reload. The existing guest FFL cleanup remains an accepted MVP exception: those shoppers reselect pickup/location after a reload. Preserve customer-identity cleanup; no new localStorage persistence is added.
 
-If discovery fails before pickup has been selected, keep the ordinary checkout usable without offering pickup. If it fails while checking an existing pickup choice, retain the panel and show **We couldn't check pickup availability. Try again or choose shipping.**
+Invalid or nonexistent ZIPs show a ZIP validation error. ZIP lookup failures have a separate retryable message. If native eligibility or location metadata discovery fails, retain the search panel and show **We couldn't check pickup availability. Try again or choose shipping.**
 
 If saving the location fails, show **We couldn't save your pickup choice. Please try again.** Keep the shopper at Delivery with their draft where still valid. If availability changed, refresh the list and ask for a new choice. A failed payment keeps the confirmed pickup for retry or an explicit change of fulfilment.
 
 ### 8. Mobile, accessibility, and wallet boundaries
 
 Use one vertical list at mobile widths, full-row radio labels, keyboard-operable controls, visible selected state, and an announced loading/error message. Use the existing checkout components and styles.
+
+The ZIP search uses the native `TextInput`, `Label`, secondary `Button`, and `form-prefixPostfix` pairing so the input and button share checkout sizing. Fulfilment radios and pickup cards use native radio/checklist components and theme selectors; headings and secondary text follow the merchant's checkout theme.
+
+Pickup options appear as separate cards using native checklist selection styles. Each card owns its rounded border and clips the inner background to keep the corners continuous. Each label includes the complete option so focus styling covers its address, collection time, and selected instructions. The address is one continuous text link that wraps naturally on small screens and opens directions in a new tab without selecting that pickup option. Only the address text is linked; adjacent whitespace selects the card.
 
 Hide express wallet entry points while pickup is selected or committed. Test the launch merchant's enabled payment methods and returning wallet sessions. A provider whose active shipping callbacks cannot be safely stopped must have pickup explicitly unavailable for that session until the customer exits it through the normal checkout controls. Do not build new wallet-specific pickup interfaces for the MVP or promise untested provider compatibility.
 
@@ -124,11 +128,12 @@ Use the existing billing step to collect/confirm billing. Set billing-as-shippin
 
 ### Discovery and minimal state
 
-- Query Storefront GraphQL locations using `window.fflStorefrontToken`, with the existing legacy token fallback if necessary. Request only identity, label, address, and coordinates. Coordinates are still needed for eligibility discovery even though distance calculation is deferred.
-- Query the native pickup-options endpoint around each location's coordinates using the previously tested 2 MI radius and all physical cart variants/quantities. Join methods to known location IDs and deduplicate by method ID so overlapping search areas do not duplicate choices. Use native collection descriptions/instructions from the response.
-- Query only within the first rollout's documented location limit. Skip locations missing coordinates with a diagnostic; treat request failure as unavailable discovery. Log failures through the existing checkout logger, with the initial versus active-pickup customer behaviour described above.
-- Start discovery when Delivery first mounts, or when restoring a native pickup checkout. Watch the cart while billing/payment is active. Key responses by cart ID, physical item IDs, variant IDs, and quantities; discard stale responses. No ZIP/geocoder client, distance endpoint, distance cache, or hours processing is included.
-- Keep local state to fulfilment intent, draft method ID, current discovery status/results, confirmation for a cart signature, and transition status. Derive the committed method and item assignment from BigCommerce's checkout state rather than maintaining a second persisted consignment model. One provider may expose this state to Checkout and payment preflight; no generic fulfilment framework is needed.
+- Resolve the submitted ZIP through `GET /store-front/api/stores/:hash/pickup/zip?zip=02108`. The backend requires an active BigCommerce store with pickup enabled and reuses its configured Google Maps geocoder. Strict country/postal-code validation prevents fallback to another place. No new dependency or migration is needed for ZIP search.
+- Send one native `/api/storefront/pickup-options` request with the ZIP coordinates, a 200 MI radius, and aggregated variant quantities for the entire physical cart. Keep only methods covering every requested item and quantity.
+- Fetch metadata only for returned eligible location IDs using Storefront GraphQL and the existing token. Batch IDs and follow location cursors; never reject a store for having more than ten locations. Reject failed/incomplete metadata requests, and skip invalid coordinates with a diagnostic.
+- Calculate straight-line distance from the ZIP center, enforce the radius, sort nearest first, and retain methods from up to five distinct stores. Preserve native collection instructions and descriptions. No automatic widening, driving-distance service, or opening-hours processing.
+- Search is explicit. Editing ZIP clears results and confirmation immediately. Cart changes recheck the submitted ZIP; reload/customer-identity reset starts with an empty ZIP. Abort obsolete searches and ignore late responses after ZIP changes, cart changes, reset, disposal, or switching to shipping.
+- State includes ZIP input, submitted ZIP, search status/errors, intent, draft method, cart signature and confirmation, and transition status. Derive the committed method and assignment from BigCommerce checkout state. A successful search never commits a consignment; Continue remains required.
 
 ### Commit and switching
 
@@ -154,7 +159,7 @@ Keep the existing BigCommerce scopes and asynchronous handoff publication. **Do 
 
 After native pickup is confirmed, publish an inactive handoff, preserving previous dealer/destination context when known. Republish on restored pickup and pickup payment preflight. Active dealer matching must reject `selectedPickupOption`, even when the pickup store shares the dealer's address. Existing publication generations, compare-and-swap revisions, bounded retries, and live-checkout refresh on conflicts prevent obsolete intents from ordinarily restoring an active dealer handoff.
 
-The backend continues using the authenticated `store/cart/converted` event and existing cart handoff. Inactive handoffs create no attribution. This is best-effort exclusion: a stale active handoff can still be consumed if every deactivation fails or arrives after conversion. Do not claim an authoritative order-fulfilment check or absolute exclusion guarantee. This accepted limit does not justify new permissions or a reconciliation system for the MVP. No backend change is planned unless focused tests identify a defect in the existing handoff handling.
+The backend continues using the authenticated `store/cart/converted` event and existing cart handoff. Inactive handoffs create no attribution. This is best-effort exclusion: a stale active handoff can still be consumed if every deactivation fails or arrives after conversion. Do not claim an authoritative order-fulfilment check or absolute exclusion guarantee. This accepted limit does not justify new permissions or a reconciliation system for the MVP. ZIP search adds only a geocoding endpoint; existing backend handoff handling remains unchanged.
 
 ### Scope of code changes
 
@@ -188,13 +193,13 @@ Required acceptance cases:
 - Native pickup never matches an active dealer destination, including a store at the same address. Confirmed pickup, restoration, and payment preflight publish inactive handoffs; stale-revision retries refresh checkout. Backend inactive handoffs create no attribution; normal FFL attribution and duplicate-webhook handling still work. Preserve the documented best-effort limit when publication fails entirely.
 - Confirm native pickup location/method and totals in the placed order and control panel. Verify the launch store's customer-facing confirmation and existing collection instructions. Test enabled payment methods, failed payment/retry, mobile, and keyboard operation.
 
-Release in order: validate pickup and handoff behaviour in staging with existing scopes; publish the checkout and confirm native pickup; remove the merchant's legacy pickup shipping rate after native pickup works. Keep the prior checkout build and the prior legacy-rate configuration for rollback. Verify controlled production orders for ordinary shipping, FFL shipping, and native pickup at the available locations.
+Release in order: deploy the backend ZIP endpoint (using the existing Google Maps key) and store-setting migration/UI; validate pickup and handoff behaviour in staging with existing scopes; publish the checkout and confirm native pickup; remove the merchant's legacy pickup shipping rate after native pickup works. Keep the prior checkout build and the prior legacy-rate configuration for rollback. Verify controlled production orders for ordinary shipping, FFL shipping, and native pickup at the available locations.
 
 ## Assumptions and limits
 
 Merchants own location configuration, inventory, collection instructions, and their in-person handover process. BigCommerce eligibility is the fulfilment input; the checkout adds no new verification, scheduling, or transfer workflow. Only locations the merchant intends and is authorised to use for these products should be configured for pickup.
 
-Multi-shipping, mixing pickup and shipping, assigning different items to different stores, alternate pickup persons, and new notification flows are outside this MVP. Distance and hours features can be reconsidered after launch if customer feedback justifies them; driving distance/time remains outside the planned design.
+Multi-shipping, mixing pickup and shipping, assigning different items to different stores, alternate pickup persons, and new notification flows are outside this MVP. Hours processing and driving distance/time remain outside the planned design.
 
 ## Local implementation and verification — 2026-09-08
 
@@ -212,3 +217,10 @@ Validation:
 - ESLint could not run because the existing installation lacks `eslint-plugin-prettier`. New files were formatted with the installed Prettier. The broad TypeScript check also includes existing test-fixture errors; the production compilation passed.
 
 Still required before release: live launch-store location/eligibility checks; native mutation and totals verification; regular/FFL/ammo/mixed cart acceptance; mobile and keyboard review; enabled payment and returning-wallet tests; and confirmation/email pickup details. Use the release sequence above with the existing permission scopes. Local tests are not evidence that a production order has been placed or a merchant template has been verified.
+
+### ZIP search validation, 2026-09-09
+
+- 267 tests passed across 14 focused checkout suites using the existing temporary Jest compatibility config. Coverage includes blank ZIP entry, invalid/nonexistent ZIPs, provider failures, 11-store nearest-five selection, multiple methods, metadata pagination/batching, empty results, stale ZIP/cart requests, confirmation, shipping recovery, FFL/ammo routing, and payment guards. The final controller guard change also passed its 20 tests.
+- 18 backend endpoint/settings tests passed against the local test database with a fake geocoder, including store/setting restrictions and exact US ZIP matching.
+- Production build passed with the installed Node 24 runtime and existing Sass/Browserslist/bundle warnings. Logs: `/private/tmp/pickup-zip-regressions.log` and `/private/tmp/pickup-zip-final-build.log`.
+- No live deployment or end-to-end merchant checkout test was performed for the new ZIP endpoint. Deploy the backend first, then the checkout bundle, and verify the complete ZIP-to-pickup flow in the test store.

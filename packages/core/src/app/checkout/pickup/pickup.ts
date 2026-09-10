@@ -1,5 +1,10 @@
 import { Cart, CheckoutSelectors, Consignment } from '@bigcommerce/checkout-sdk';
 
+export interface PickupCoordinates {
+  latitude: number;
+  longitude: number;
+}
+
 export interface PickupLocation {
   entityId: number;
   label: string;
@@ -21,6 +26,7 @@ export interface PickupChoice {
   displayName: string;
   collectionInstructions?: string;
   collectionTimeDescription?: string;
+  distanceMiles?: number;
 }
 
 export const pickupCartSignature = (cart?: Cart): string =>

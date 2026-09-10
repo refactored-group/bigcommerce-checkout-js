@@ -4,23 +4,40 @@ import stripFFLFromCheckoutNotes from '../../order/stripFFLFromCheckoutNotes';
 import { FflConsignmentCoordinator } from '../dealer/fflConsignmentCoordinator';
 
 import discoverPickup from './discoverPickup';
-import { hasNativePickup, matchesPickup, PickupChoice, pickupCartSignature } from './pickup';
+import {
+  hasNativePickup,
+  matchesPickup,
+  PickupChoice,
+  PickupCoordinates,
+  pickupCartSignature,
+} from './pickup';
+import { InvalidPickupZipError } from './resolvePickupZip';
 
 export interface PickupState {
   intent: 'shipping' | 'pickup';
   choices: PickupChoice[];
   status: 'idle' | 'loading' | 'ready' | 'error';
+  zip: string;
+  searchedZip?: string;
+  searchError?: 'invalid_zip' | 'zip_error';
   signature?: string;
   draftMethodId?: number;
   confirmedSignature?: string;
   transitioning: boolean;
-  message?: 'cart_changed' | 'availability_error' | 'save_error' | 'switch_error' | 'confirm_again' | 'disabled';
+  message?:
+    | 'cart_changed'
+    | 'availability_error'
+    | 'save_error'
+    | 'switch_error'
+    | 'confirm_again'
+    | 'disabled';
 }
 
 export const initialPickupState: PickupState = {
   intent: 'shipping',
   choices: [],
   status: 'idle',
+  zip: '',
   transitioning: false,
 };
 
@@ -35,7 +52,13 @@ interface Dependencies {
   settleShipping(): Promise<void>;
   updateCheckout(body: { customerMessage: string }): Promise<CheckoutSelectors>;
   log(error: Error): void;
-  discover?(cart: Cart, log: (error: Error) => void, signal?: AbortSignal): Promise<PickupChoice[]>;
+  resolveZip(zip: string, signal?: AbortSignal): Promise<PickupCoordinates>;
+  discover?(
+    cart: Cart,
+    coordinates: PickupCoordinates,
+    log: (error: Error) => void,
+    signal?: AbortSignal,
+  ): Promise<PickupChoice[]>;
 }
 
 // Local confirmation is deliberately not persisted. Native pickup survives a
@@ -68,6 +91,8 @@ export default class PickupController {
     void this.change({
       ...initialPickupState,
       signature: undefined,
+      searchedZip: undefined,
+      searchError: undefined,
       confirmedSignature: undefined,
       draftMethodId: undefined,
       message: undefined,
@@ -102,7 +127,7 @@ export default class PickupController {
     );
   }
 
-  observe(startDiscovery: boolean): void {
+  observe(_startDiscovery: boolean): void {
     const state = this.deps.getState();
     const cart = state.data.getCart();
 
@@ -135,15 +160,19 @@ export default class PickupController {
     if (!this.deps.isEnabled()) {
       const message = this.state.message === 'switch_error' ? 'switch_error' : 'disabled';
 
-      if (this.isPickup(state) && (
-        this.state.status !== 'ready' || this.state.message !== message || this.state.choices.length > 0
-      )) {
+      if (
+        this.isPickup(state) &&
+        (this.state.status !== 'ready' ||
+          this.state.message !== message ||
+          this.state.choices.length > 0)
+      ) {
         this.abort?.abort();
         void this.change({
           status: 'ready',
           choices: [],
           draftMethodId: undefined,
           confirmedSignature: undefined,
+          searchError: undefined,
           message,
         });
         this.deps.onRequireDelivery();
@@ -158,42 +187,111 @@ export default class PickupController {
       this.deps.onRequireDelivery();
     }
 
-    if ((startDiscovery || this.isPickup(state)) && this.state.signature !== signature) {
+    if (this.isPickup(state) && this.state.searchedZip && this.state.signature !== signature) {
       void this.refresh();
     }
   }
 
-  async refresh(): Promise<void> {
-    const cart = this.deps.getState().data.getCart();
-
-    if (!cart || this.disposed || !this.deps.isEnabled()) {
+  setZip(zip: string): void {
+    if (this.state.transitioning || !this.deps.isEnabled() || zip === this.state.zip) {
       return;
     }
 
     this.abort?.abort();
+    this.operation += 1;
+    void this.change({
+      zip,
+      searchedZip: undefined,
+      searchError: undefined,
+      status: 'idle',
+      choices: [],
+      signature: undefined,
+      draftMethodId: undefined,
+      confirmedSignature: undefined,
+      message: undefined,
+    });
+  }
+
+  async search(): Promise<void> {
+    await this.refresh(true);
+  }
+
+  async refresh(newSearch = false): Promise<void> {
+    const cart = this.deps.getState().data.getCart();
+
+    if (
+      !cart ||
+      this.disposed ||
+      !this.deps.isEnabled() ||
+      !this.isPickup() ||
+      (newSearch && this.state.transitioning) ||
+      (!newSearch && !this.state.searchedZip)
+    ) {
+      return;
+    }
+
+    this.abort?.abort();
+    this.operation += 1;
     const abort = new AbortController();
     this.abort = abort;
     const signature = pickupCartSignature(cart);
+    const zip = this.state.zip.trim();
+    const previous = newSearch ? undefined : this.state.draftMethodId;
 
-    await this.change({ status: 'loading', signature, confirmedSignature: undefined });
+    if (!/^[0-9]{5}$/.test(zip)) {
+      await this.change({
+        status: 'idle',
+        choices: [],
+        draftMethodId: undefined,
+        confirmedSignature: undefined,
+        searchedZip: undefined,
+        searchError: 'invalid_zip',
+      });
+      return;
+    }
+
+    await this.change({
+      status: 'loading',
+      zip,
+      searchedZip: zip,
+      signature,
+      choices: [],
+      draftMethodId: undefined,
+      confirmedSignature: undefined,
+      searchError: undefined,
+      message:
+        newSearch || this.state.message === 'availability_error' ? undefined : this.state.message,
+    });
+    let resolvingZip = true;
+    const isCurrentSearch = () =>
+      !abort.signal.aborted &&
+      !this.disposed &&
+      this.deps.isEnabled() &&
+      this.state.intent === 'pickup' &&
+      this.state.searchedZip === zip &&
+      signature === pickupCartSignature(this.deps.getState().data.getCart());
 
     try {
+      if (!isCurrentSearch()) {
+        return;
+      }
+      const coordinates = await this.deps.resolveZip(zip, abort.signal);
+
+      if (!isCurrentSearch()) {
+        return;
+      }
+      resolvingZip = false;
       const choices = await (this.deps.discover || discoverPickup)(
         cart,
+        coordinates,
         this.deps.log,
         abort.signal,
       );
 
-      if (
-        abort.signal.aborted ||
-        this.disposed ||
-        !this.deps.isEnabled() ||
-        signature !== pickupCartSignature(this.deps.getState().data.getCart())
-      ) {
+      if (!isCurrentSearch()) {
         return;
       }
 
-      const previous = this.state.draftMethodId;
       const draftMethodId = choices.some(({ id }) => id === previous)
         ? previous
         : this.state.intent === 'pickup' && choices.length === 1
@@ -204,10 +302,9 @@ export default class PickupController {
         choices,
         draftMethodId,
         status: 'ready',
-        message: this.state.message === 'availability_error' ? 'confirm_again' : this.state.message,
       });
     } catch (error) {
-      if (abort.signal.aborted || this.disposed) {
+      if (!isCurrentSearch()) {
         return;
       }
 
@@ -215,18 +312,18 @@ export default class PickupController {
       await this.change({
         status: 'error',
         choices: [],
-        message: this.isPickup() ? 'availability_error' : undefined,
+        searchError: resolvingZip
+          ? error instanceof InvalidPickupZipError
+            ? 'invalid_zip'
+            : 'zip_error'
+          : undefined,
+        message: resolvingZip ? undefined : 'availability_error',
       });
     }
   }
 
   async choosePickup(message?: string): Promise<void> {
-    if (
-      !this.deps.isEnabled() ||
-      this.state.transitioning ||
-      this.state.status === 'error' ||
-      (this.state.status === 'ready' && !this.state.choices.length)
-    ) {
+    if (!this.deps.isEnabled() || this.state.transitioning) {
       return;
     }
 
@@ -243,8 +340,7 @@ export default class PickupController {
     });
 
     try {
-      // An early pickup click can precede the first background discovery.
-      // observe reuses the request already in flight for this cart.
+      // Eligibility starts only after the shopper submits a ZIP.
       this.observe(true);
       // onChange resolves after React unmounts the old shipping form and
       // cancels its debounce; then wait for mutations already in flight.
@@ -259,7 +355,12 @@ export default class PickupController {
   }
 
   chooseMethod(draftMethodId: number): void {
-    if (this.deps.isEnabled() && !this.state.transitioning) {
+    if (
+      this.deps.isEnabled() &&
+      !this.state.transitioning &&
+      this.state.status === 'ready' &&
+      this.state.choices.some(({ id }) => id === draftMethodId)
+    ) {
       void this.change({ draftMethodId, confirmedSignature: undefined, message: undefined });
     }
   }
@@ -278,7 +379,14 @@ export default class PickupController {
     const { draftMethodId, signature, status, transitioning, choices } = this.state;
     const cart = this.deps.getState().data.getCart();
 
-    if (!this.deps.isEnabled() || transitioning || status !== 'ready' || !draftMethodId || !signature || !cart) {
+    if (
+      !this.deps.isEnabled() ||
+      transitioning ||
+      status !== 'ready' ||
+      !draftMethodId ||
+      !signature ||
+      !cart
+    ) {
       return;
     }
 
@@ -329,6 +437,7 @@ export default class PickupController {
     }
 
     this.operation += 1;
+    this.abort?.abort();
     await this.change({ transitioning: true, confirmedSignature: undefined });
 
     try {
@@ -352,6 +461,11 @@ export default class PickupController {
       this.deps.coordinator.resumeShipping();
       await this.change({
         intent: 'shipping',
+        status: 'idle',
+        choices: [],
+        searchedZip: undefined,
+        searchError: undefined,
+        signature: undefined,
         transitioning: false,
         draftMethodId: undefined,
         message: undefined,

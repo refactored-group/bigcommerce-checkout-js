@@ -66,6 +66,7 @@ import {
 import { ConfirmedAmmoRoutingSession } from './dealer/utils';
 import PickupController, { initialPickupState, PickupState } from './pickup/PickupController';
 import loadPickupSetting from './pickup/loadPickupSetting';
+import resolvePickupZip from './pickup/resolvePickupZip';
 import PickupShipping, { FulfillmentChoice } from './pickup/PickupShipping';
 import { hasNativePickup, pickupAddress, pickupCartSignature } from './pickup/pickup';
 import { SUPPORTED_METHODS } from '../customer';
@@ -279,6 +280,7 @@ export class Checkout extends Component<
     private classifiedCartSignature?: string;
     private pickupController = new PickupController({
         isEnabled: () => this.state.enableInStorePickup,
+        resolveZip: (zip, signal) => resolvePickupZip(this.state.storeHash, zip, signal),
         coordinator: this.fflConsignmentCoordinator,
         getState: () => this.props.getCheckoutState(),
         updateCheckout: (body) => this.props.updateCheckout(body),
@@ -817,11 +819,8 @@ export class Checkout extends Component<
         // split. Only a shopper's explicit choice makes that dealer flow multi-shipping.
         const multiShipping = this.state.isMultiShippingMode &&
             (!isDealer || this.hasExplicitMultiShippingChoice);
-        const canDiscoverPickup = this.state.enableInStorePickup &&
+        const offer = this.state.enableInStorePickup &&
             !multiShipping && !this.isPickupSessionBlocked();
-        const isCheckingPickup = pickup.status === 'idle' || pickup.status === 'loading';
-        const hasPickupChoices = pickup.status === 'ready' && pickup.choices.length > 0;
-        const offer = canDiscoverPickup && (isCheckingPickup || hasPickupChoices);
         const choice = pickup.choices.find(({ id }) => id ===
             this.props.consignments?.[0]?.selectedPickupOption?.pickupMethodId);
         const summary = active && choice ? <div className="staticConsignment">
@@ -842,6 +841,8 @@ export class Checkout extends Component<
             onConfirm={(message) => this.pickupController.confirm(message)}
             onShipping={(message) => this.pickupController.chooseShipping(message)}
             onSelect={(id) => this.pickupController.chooseMethod(id)}
+            onZipChange={(zip) => this.pickupController.setZip(zip)}
+            onSearch={() => void this.pickupController.search()}
             onRetry={() => void this.pickupController.refresh()}
         /> : <>
             {offer && <FulfillmentChoice
