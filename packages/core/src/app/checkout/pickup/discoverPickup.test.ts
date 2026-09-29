@@ -116,6 +116,24 @@ it('does not widen an empty search or fetch location metadata for no eligible me
   expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
+it('filters native methods by category policy before fetching metadata or limiting stores', async () => {
+  const ids = [1, 2, 3, 4, 5, 6];
+  fetchMock
+    .mockImplementationOnce(() => native(ids.map((id) => option(id))))
+    .mockImplementationOnce(() => metadata([location(6)]));
+
+  const choices = await discoverPickup(cart, center, jest.fn(), undefined, [6]);
+
+  expect(choices.map(({ location }) => location.entityId)).toEqual([6]);
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body).variables.ids).toEqual([6]);
+});
+
+it('does not show native methods when category policy has no allowed location', async () => {
+  fetchMock.mockImplementationOnce(() => native([option(1)]));
+  expect(await discoverPickup(cart, center, jest.fn(), undefined, [])).toEqual([]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
 it('excludes stores outside 200 miles and locations with unusable coordinates', async () => {
   fetchMock
     .mockImplementationOnce(() => native([option(1), option(2), option(3)]))

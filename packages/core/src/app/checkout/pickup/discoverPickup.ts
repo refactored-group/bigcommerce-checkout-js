@@ -30,6 +30,7 @@ export default async function discoverPickup(
   coordinates: PickupCoordinates,
   log: (error: Error) => void,
   signal?: AbortSignal,
+  allowedLocationIds?: number[] | null,
 ): Promise<PickupChoice[]> {
   const items = new Map<number, number>();
 
@@ -83,7 +84,8 @@ export default async function discoverPickup(
         pickupMethod.id > 0 &&
         Number.isInteger(pickupMethod.locationId) &&
         pickupMethod.locationId > 0 &&
-        coversCart
+        coversCart &&
+        (allowedLocationIds == null || allowedLocationIds.includes(pickupMethod.locationId))
       ) {
         methods.set(pickupMethod.id, pickupMethod);
       }

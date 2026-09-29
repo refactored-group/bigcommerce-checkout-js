@@ -72,6 +72,7 @@ const setup = () => {
       return state;
     }),
     resolveZip: jest.fn(async () => ({ latitude: 30, longitude: -97 })),
+    eligibility: jest.fn(async () => null as number[] | null),
     discover: jest.fn(async () => [choice]),
   };
   const controller = new PickupController(deps);
@@ -171,6 +172,7 @@ describe('shared native pickup', () => {
       { latitude: 30, longitude: -97 },
       deps.log,
       expect.anything(),
+      null,
     );
     expect(controller.state.draftMethodId).toBe(7);
     expect(controller.isReady()).toBe(false);
@@ -363,6 +365,50 @@ describe('shared native pickup', () => {
     await controller.confirm();
     expect(sdk.updateConsignment.mock.calls[0][0].lineItems[1].quantity).toBe(3);
     expect(controller.isReady()).toBe(true);
+  });
+
+  it('rechecks category eligibility at confirmation and payment', async () => {
+    const { controller, deps, state, sdk } = setup();
+    const eligibility = jest.fn(async () => [3] as number[] | null);
+    deps.eligibility = eligibility;
+    controller.observe(true);
+    await flush();
+    await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
+    expect(eligibility).toHaveBeenCalledTimes(1);
+
+    deps.discover.mockResolvedValueOnce([]);
+    await controller.confirm();
+    expect(sdk.createConsignments).not.toHaveBeenCalled();
+    expect(controller.isReady()).toBe(false);
+
+    await controller.search();
+    await controller.confirm();
+    expect(controller.isReady()).toBe(true);
+
+    eligibility.mockRejectedValueOnce(new Error('eligibility unavailable'));
+    await expect(controller.preflight(state)).rejects.toThrow('retry pickup availability');
+    expect(controller.isReady()).toBe(false);
+    expect(deps.onRequireDelivery).toHaveBeenCalled();
+  });
+
+  it('clears a selected pickup method when a fresh check no longer qualifies', async () => {
+    const { controller, deps, state, sdk } = setup();
+    controller.observe(true);
+    await flush();
+    await controller.choosePickup();
+    controller.setZip('78701');
+    await controller.search();
+    await controller.confirm();
+    expect(controller.isReady()).toBe(true);
+
+    deps.discover.mockResolvedValueOnce([]);
+    await expect(controller.preflight(state)).rejects.toThrow('retry pickup availability');
+    expect(state.data.getConsignments()).toEqual([]);
+    expect(sdk.deleteConsignment).toHaveBeenCalled();
+    expect(controller.state.draftMethodId).toBeUndefined();
+    expect(controller.isReady()).toBe(false);
   });
 
   it('restores native pickup as an unconfirmed draft and republishes inactive handoff', async () => {

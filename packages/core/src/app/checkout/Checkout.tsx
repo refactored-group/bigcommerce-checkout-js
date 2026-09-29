@@ -66,6 +66,7 @@ import {
 import { ConfirmedAmmoRoutingSession } from './dealer/utils';
 import PickupController, { initialPickupState, PickupState } from './pickup/PickupController';
 import loadPickupSetting from './pickup/loadPickupSetting';
+import loadCategoryEligibility from './pickup/loadCategoryEligibility';
 import resolvePickupZip from './pickup/resolvePickupZip';
 import PickupShipping, { FulfillmentChoice } from './pickup/PickupShipping';
 import { hasNativePickup, pickupAddress, pickupCartSignature } from './pickup/pickup';
@@ -281,6 +282,7 @@ export class Checkout extends Component<
     private pickupController = new PickupController({
         isEnabled: () => this.state.enableInStorePickup,
         resolveZip: (zip, signal) => resolvePickupZip(this.state.storeHash, zip, signal),
+        eligibility: (cart, signal) => loadCategoryEligibility(this.state.storeHash, cart, signal),
         coordinator: this.fflConsignmentCoordinator,
         getState: () => this.props.getCheckoutState(),
         updateCheckout: (body) => this.props.updateCheckout(body),

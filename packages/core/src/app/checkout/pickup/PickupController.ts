@@ -53,11 +53,13 @@ interface Dependencies {
   updateCheckout(body: { customerMessage: string }): Promise<CheckoutSelectors>;
   log(error: Error): void;
   resolveZip(zip: string, signal?: AbortSignal): Promise<PickupCoordinates>;
+  eligibility(cart: Cart, signal?: AbortSignal): Promise<number[] | null>;
   discover?(
     cart: Cart,
     coordinates: PickupCoordinates,
     log: (error: Error) => void,
     signal?: AbortSignal,
+    allowedLocationIds?: number[] | null,
   ): Promise<PickupChoice[]>;
 }
 
@@ -281,11 +283,18 @@ export default class PickupController {
         return;
       }
       resolvingZip = false;
+      const allowed = await this.deps.eligibility(cart, abort.signal);
+
+      if (!isCurrentSearch()) {
+        return;
+      }
+
       const choices = await (this.deps.discover || discoverPickup)(
         cart,
         coordinates,
         this.deps.log,
         abort.signal,
+        allowed,
       );
 
       if (!isCurrentSearch()) {
@@ -375,6 +384,60 @@ export default class PickupController {
     }
   }
 
+  private async verifyMethod(
+    cart: Cart,
+    methodId: number,
+    signature: string,
+    expectedOperation: number,
+  ): Promise<boolean> {
+    const zip = this.state.searchedZip;
+
+    if (!zip || pickupCartSignature(cart) !== signature) {
+      return false;
+    }
+
+    const coordinates = await this.deps.resolveZip(zip);
+    const allowed = await this.deps.eligibility(cart);
+    const choices = await (this.deps.discover || discoverPickup)(
+      cart,
+      coordinates,
+      this.deps.log,
+      undefined,
+      allowed,
+    );
+
+    if (
+      this.operation !== expectedOperation ||
+      this.state.intent !== 'pickup' ||
+      this.state.searchedZip !== zip ||
+      pickupCartSignature(this.deps.getState().data.getCart()) !== signature
+    ) {
+      return false;
+    }
+
+    if (!choices.some(({ id }) => id === methodId)) {
+      await this.change({
+        choices,
+        draftMethodId: undefined,
+        confirmedSignature: undefined,
+        message: 'confirm_again',
+      });
+      this.deps.onRequireDelivery();
+
+      if (hasNativePickup(this.deps.getState().data.getConsignments())) {
+        const result = await this.deps.coordinator.clearAll(cart.id);
+
+        if (result.status !== 'fulfilled') {
+          throw result.status === 'failed' ? result.error : new Error('Pickup cleanup was superseded');
+        }
+      }
+
+      return false;
+    }
+
+    return true;
+  }
+
   async confirm(message?: string): Promise<void> {
     const { draftMethodId, signature, status, transitioning, choices } = this.state;
     const cart = this.deps.getState().data.getCart();
@@ -391,11 +454,16 @@ export default class PickupController {
     }
 
     const operation = ++this.operation;
+    let verified = false;
     await this.change({ transitioning: true, confirmedSignature: undefined, message: undefined });
 
     try {
       await this.deps.coordinator.suspendShipping();
       await this.deps.settleShipping();
+      if (!(await this.verifyMethod(cart, draftMethodId, signature, operation))) {
+        throw new Error('Pickup option is no longer available');
+      }
+      verified = true;
       const result = await this.deps.coordinator.selectPickup(
         cart.id,
         signature,
@@ -425,7 +493,11 @@ export default class PickupController {
       await this.change({
         transitioning: false,
         confirmedSignature: undefined,
-        message: 'save_error',
+        message: this.state.message === 'confirm_again'
+          ? 'confirm_again'
+          : verified
+          ? 'save_error'
+          : 'availability_error',
       });
       await this.refresh();
     }
@@ -500,6 +572,26 @@ export default class PickupController {
       this.observe(true);
       this.deps.onRequireDelivery();
       throw new Error('Please confirm your pickup location in Shipping before paying.');
+    }
+
+    const cart = this.deps.getState().data.getCart();
+    const methodId = this.state.draftMethodId;
+    const signature = this.state.signature;
+
+    try {
+      if (!cart || !methodId || !signature ||
+        !(await this.verifyMethod(cart, methodId, signature, this.operation))) {
+        this.deps.onRequireDelivery();
+        throw new Error('Pickup option is no longer available');
+      }
+    } catch (error) {
+      this.deps.log(error instanceof Error ? error : new Error(String(error)));
+      await this.change({
+        confirmedSignature: undefined,
+        message: this.state.message === 'confirm_again' ? 'confirm_again' : 'availability_error',
+      });
+      this.deps.onRequireDelivery();
+      throw new Error('Please retry pickup availability in Shipping before paying.');
     }
   }
 }
