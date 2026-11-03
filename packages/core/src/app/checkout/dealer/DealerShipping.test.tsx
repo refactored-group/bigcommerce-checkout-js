@@ -111,8 +111,14 @@ const makeProps = (isGuest = false) => {
         hasPostalCodes: true,
         requiresState: true,
         subdivisions: [
+          { code: 'AS', name: 'American Samoa' },
           { code: 'CA', name: 'California' },
+          { code: 'DC', name: 'District of Columbia' },
+          { code: 'GU', name: 'Guam' },
+          { code: 'MP', name: 'Northern Mariana Islands' },
+          { code: 'PR', name: 'Puerto Rico' },
           { code: 'TX', name: 'Texas' },
+          { code: 'VI', name: 'Virgin Islands' },
         ],
       },
     ],
@@ -352,6 +358,21 @@ const getShippingFooterProps = (subject: DealerShipping) => {
 describe('DealerShipping ammo reconciliation', () => {
   beforeEach(() => {
     global.fetch = jest.fn(() => new Promise(() => undefined)) as jest.Mock;
+  });
+
+  it('passes BigCommerce native US subdivisions to the ammo selector', () => {
+    const { subject } = makeSubject(true);
+
+    expect((subject as any).getUsSubdivisions().map(({ code }: any) => code)).toEqual([
+      'AS',
+      'CA',
+      'DC',
+      'GU',
+      'MP',
+      'PR',
+      'TX',
+      'VI',
+    ]);
   });
 
   it('loads native shipping data before reporting the shipping step ready', async () => {

@@ -1551,6 +1551,9 @@ export class DealerShipping extends React.PureComponent<
     return requirements;
   };
 
+  private getUsSubdivisions = () =>
+    this.props.countries.find(({ code }) => code === 'US')?.subdivisions || EMPTY_ARRAY;
+
   validateSelectedState: (event: any) => void = async (event) => {
     const stateCode = event.target.value;
     await this.reconcileAmmoRouting(stateCode);
@@ -1733,6 +1736,7 @@ export class DealerShipping extends React.PureComponent<
           !this.state.bypassFFL && (
             <StatesDropdown
               selectedState={this.state.ammoSelectedState}
+              subdivisions={this.getUsSubdivisions()}
               validateSelectedState={this.validateSelectedState}
             />
           )}
