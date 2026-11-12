@@ -30,6 +30,7 @@ export interface ShippingFormProps {
     countries: Country[];
     countriesWithAutocomplete: string[];
     customerMessage: string;
+    readonly orderCommentDraft?: string;
     googleMapsApiKey?: string;
     isBillingSameAsShipping: boolean;
     isGuest: boolean;
@@ -53,6 +54,7 @@ export interface ShippingFormProps {
     onSignIn(): void;
     onSingleShippingSubmit(values: SingleShippingFormValues): void;
     onUnhandledError(error: Error): void;
+    onOrderCommentChange?(value: string): void;
     onUseNewAddress(address: Address, itemId: string): void;
     signOut(options?: CustomerRequestOptions): void;
     updateAddress(
@@ -72,6 +74,7 @@ const ShippingForm = ({
     countriesWithAutocomplete,
     onCreateAccount,
     customerMessage,
+    orderCommentDraft,
     deinitialize,
     deleteConsignments,
     getFields,
@@ -86,6 +89,7 @@ const ShippingForm = ({
     onSignIn,
     onSingleShippingSubmit,
     onUnhandledError,
+    onOrderCommentChange,
     onUseNewAddress,
     shippingAddress,
     shouldShowOrderComments,
@@ -124,6 +128,7 @@ const ShippingForm = ({
             countriesWithAutocomplete={countriesWithAutocomplete}
             createCustomerAddress={createCustomerAddress}
             customerMessage={customerMessage}
+            orderCommentDraft={orderCommentDraft}
             defaultCountryCode={shippingAddress?.countryCode}
             getFields={getFields}
             googleMapsApiKey={googleMapsApiKey}
@@ -134,6 +139,7 @@ const ShippingForm = ({
             onCreateAccount={onCreateAccount}
             onSignIn={onSignIn}
             onSubmit={onMultiShippingSubmit}
+            onOrderCommentChange={onOrderCommentChange}
             onUnhandledError={onUnhandledError}
             onUseNewAddress={onUseNewAddress}
             shouldShowOrderComments={shouldShowOrderComments}
@@ -146,6 +152,7 @@ const ShippingForm = ({
             countries={countries}
             countriesWithAutocomplete={countriesWithAutocomplete}
             customerMessage={customerMessage}
+            orderCommentDraft={orderCommentDraft}
             deinitialize={deinitialize}
             deleteConsignments={deleteConsignments}
             getFields={getFields}
@@ -159,6 +166,7 @@ const ShippingForm = ({
             isShippingStepPending={isShippingStepPending}
             methodId={methodId}
             onSubmit={onSingleShippingSubmit}
+            onOrderCommentChange={onOrderCommentChange}
             onUnhandledError={onUnhandledError}
             shippingAddress={shippingAddress}
             shouldShowOrderComments={shouldShowOrderComments}

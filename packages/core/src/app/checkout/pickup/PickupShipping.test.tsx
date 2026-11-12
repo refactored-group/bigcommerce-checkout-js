@@ -4,6 +4,7 @@ import React from 'react';
 import { createLocaleContext, LocaleContext } from '@bigcommerce/checkout/locale';
 
 import { getStoreConfig } from '../../config/config.mock';
+import composeFFLCheckoutNotes from '../../order/composeFFLCheckoutNotes';
 
 import { PickupChoice } from './pickup';
 import { initialPickupState } from './PickupController';
@@ -43,6 +44,7 @@ const setup = (choices = [choice]) => {
     customerMessage: 'Keep this note',
     showOrderComments: true,
     onConfirm: jest.fn().mockResolvedValue(undefined),
+    onOrderCommentChange: jest.fn(),
     onShipping: jest.fn().mockResolvedValue(undefined),
     onSelect: jest.fn(),
     onRetry: jest.fn(),
@@ -131,8 +133,35 @@ it('only commits on Continue and preserves edited comments when switching to shi
   });
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
   await waitFor(() => expect(props.onConfirm).toHaveBeenCalledWith('Call me first'));
+  expect(props.onOrderCommentChange).toHaveBeenCalledWith('Call me first');
   fireEvent.click(screen.getByRole('radio', { name: 'Ship my order' }));
   await waitFor(() => expect(props.onShipping).toHaveBeenCalledWith('Call me first'));
+});
+
+it('never displays generated metadata and preserves an intentional empty draft', () => {
+  const { props, rerender } = setup();
+  const combined = composeFFLCheckoutNotes('Pickup customer note', {
+    fflID: '6-04-123-01-5F-03791',
+  });
+
+  rerender(
+    <LocaleContext.Provider value={createLocaleContext(getStoreConfig())}>
+      <PickupShipping {...props} customerMessage={combined} />
+    </LocaleContext.Provider>,
+  );
+  const commentInput = screen.getByDisplayValue('Pickup customer note');
+
+  // eslint-disable-next-line jest-dom/prefer-to-have-attribute
+  expect(commentInput.getAttribute('value')).toBe('Pickup customer note');
+  expect(screen.queryByDisplayValue(combined)?.getAttribute('value')).toBeUndefined();
+
+  rerender(
+    <LocaleContext.Provider value={createLocaleContext(getStoreConfig())}>
+      <PickupShipping {...props} customerMessage={combined} orderCommentDraft="" />
+    </LocaleContext.Provider>,
+  );
+  // eslint-disable-next-line jest-dom/prefer-to-have-attribute
+  expect(commentInput.getAttribute('value')).toBe('');
 });
 
 it('keeps the search blank on entry and uses Enter only for searching', () => {

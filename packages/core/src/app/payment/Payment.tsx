@@ -39,7 +39,6 @@ import {
     PaymentMethodProviderType,
 } from './paymentMethod';
 
-import appendFFLtoCheckoutNotes from '../order/appendFFLtoCheckoutNotes';
 import { hasNativePickup } from '../checkout/pickup/pickup';
 import stripFFLFromCheckoutNotes from '../order/stripFFLFromCheckoutNotes';
 
@@ -57,8 +56,6 @@ export interface PaymentProps {
     onSubmitError?(error: Error): void;
     onUnhandledError?(error: Error): void;
     storeHash: string;
-    selectedFFL: any;
-    fflToOrderComments: boolean;
 }
 
 interface WithCheckoutPaymentProps {
@@ -492,10 +489,6 @@ export class Payment extends Component<
 
             if (customSubmit) {
                 return await customSubmit(values);
-            }
-
-            if (!isPickup && this.props.selectedFFL && this.props.fflToOrderComments) {
-                await appendFFLtoCheckoutNotes(checkout, updateCheckout, this.props.selectedFFL);
             }
 
             const state = await submitOrder(mapToOrderRequestBody(values, isPaymentDataRequired()));

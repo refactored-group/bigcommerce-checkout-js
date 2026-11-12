@@ -40,6 +40,10 @@ import {
   AddressFormValues,
 } from '../../address';
 import { retry, EMPTY_ARRAY } from '../../common/utility';
+import composeFFLCheckoutNotes, {
+  CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH,
+} from '../../order/composeFFLCheckoutNotes';
+import stripFFLFromCheckoutNotes from '../../order/stripFFLFromCheckoutNotes';
 import { Form } from '../../ui/form';
 
 import getShippableLineItems from './getShippableLineItems';
@@ -200,6 +204,9 @@ interface DealerProps {
   clearConfirmedAmmoRoutingSession(): void;
   confirmAmmoRoutingSession(session: ConfirmedAmmoRoutingSession): void;
   setCustomerAddressSelection(address?: Address): void;
+  fflToOrderComments: boolean;
+  orderCommentDraft?: string;
+  onOrderCommentChange?(value: string): void;
 }
 
 interface DealerState {
@@ -243,6 +250,8 @@ interface DealerState {
   bypassOption: boolean;
   bypassText: string;
   useGenericFflRecipientName: boolean;
+  isSavingOrderComment: boolean;
+  orderCommentErrorLimit?: number;
 }
 
 function DealerMessageListener({ selectDealer }) {
@@ -290,6 +299,7 @@ export class DealerShipping extends React.PureComponent<
 
   private debouncedAssignAddress: any;
   private isUnmounted = false;
+  private orderCommentSaveInFlight = false;
 
   constructor(props: any) {
     super(props);
@@ -337,6 +347,7 @@ export class DealerShipping extends React.PureComponent<
       customPostCodeInputError: false,
       customerAddressSelection: currentPageAddress,
       isLoading: true,
+      isSavingOrderComment: false,
       isUpdatingShippingData: false,
       itemAddingAddress: null,
       items: [],
@@ -964,6 +975,10 @@ export class DealerShipping extends React.PureComponent<
    * and set the bypassFFL flag to true. Once bypassed, the customer cannot revert.
    */
   private handleBypassFFLToggle = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (this.orderCommentSaveInFlight) {
+      return;
+    }
+
     if (e.target.checked) {
       this.setState({ ammoRoutingError: false, isUpdatingShippingData: true });
       const result = await this.props.fflConsignmentCoordinator.clearAll(
@@ -997,6 +1012,10 @@ export class DealerShipping extends React.PureComponent<
   };
 
   handleManualFFLInput: () => Promise<void> = async () => {
+    if (this.orderCommentSaveInFlight) {
+      return;
+    }
+
     const { manualFflInput } = this.state;
     const dealerLineItems = this.getDealerLineItems();
     const result = await this.reconcileFflConsignments(
@@ -1028,6 +1047,10 @@ export class DealerShipping extends React.PureComponent<
   };
 
   toggleMapSelector: () => void = () => {
+    if (this.orderCommentSaveInFlight) {
+      return;
+    }
+
     this.setState({
       manualFflInput: false,
       showLocator: true,
@@ -1035,6 +1058,10 @@ export class DealerShipping extends React.PureComponent<
   };
 
   selectDealer: (dealer: any) => Promise<void> = (dealer: any) => {
+    if (this.orderCommentSaveInFlight) {
+      return Promise.resolve();
+    }
+
     const selectedDealer = { ...dealer, shouldSaveAddress: false };
     const dealerId = this.getDealerId(selectedDealer);
 
@@ -1807,6 +1834,7 @@ export class DealerShipping extends React.PureComponent<
                 <button
                   type="button"
                   className="button button--primary optimizedCheckout-buttonPrimary automaticFfl-dealerButton"
+                  disabled={this.state.isSavingOrderComment}
                   onClick={this.toggleMapSelector}
                 >
                   {selectedFflAddress ? (
@@ -1829,7 +1857,7 @@ export class DealerShipping extends React.PureComponent<
                   id="bypassFFL"
                   checked={this.state.bypassFFL}
                   onChange={this.handleBypassFFLToggle}
-                  disabled={this.state.bypassFFL}
+                  disabled={this.state.bypassFFL || this.state.isSavingOrderComment}
                   style={{ margin: '0 10px 0 0', verticalAlign: 'middle' }}
                 />
                 <label
@@ -1987,9 +2015,12 @@ export class DealerShipping extends React.PureComponent<
         {!this.state.manualFflInput && !this.state.bypassFFL && (
           <ShippingFormFooter
             cartHasChanged={cartHasChanged}
-            isLoading={isLoading}
-            customerMessage={customerMessage}
+            isLoading={isLoading || this.state.isSavingOrderComment}
+            customerMessage={stripFFLFromCheckoutNotes(customerMessage)}
+            onOrderCommentChange={this.props.onOrderCommentChange}
             onSubmit={this.handleMultiShippingSubmit}
+            orderCommentDraft={this.props.orderCommentDraft}
+            orderCommentErrorLimit={this.state.orderCommentErrorLimit}
             shouldDisableSubmit={this.shouldDisableSubmit()}
             shouldShowOrderComments={shouldShowOrderComments}
             shouldShowShippingOptions={
@@ -2011,6 +2042,8 @@ export class DealerShipping extends React.PureComponent<
             onSignIn={this.props.onSignIn}
             onToggleMultiShipping={this.props.onToggleMultiShipping}
             onUnhandledError={this.props.onUnhandledError}
+            onOrderCommentChange={this.props.onOrderCommentChange}
+            orderCommentDraft={this.props.orderCommentDraft}
           />
         )}
       </section>
@@ -2071,6 +2104,10 @@ export class DealerShipping extends React.PureComponent<
   private handleMultiShippingSubmit: (values: MultiShippingFormValues) => void = async ({
     orderComment,
   }) => {
+    if (this.orderCommentSaveInFlight) {
+      return;
+    }
+
     const {
       cart,
       consignments,
@@ -2106,14 +2143,56 @@ export class DealerShipping extends React.PureComponent<
       }
     }
 
+    const customerOnlyMessage = stripFFLFromCheckoutNotes(orderComment);
+    const applicableDealer =
+      this.props.fflToOrderComments && this.props.selectedFFL && this.getFFLItems().length > 0
+        ? this.props.selectedFFL
+        : undefined;
+    const desiredMessage = composeFFLCheckoutNotes(customerOnlyMessage, applicableDealer);
+    const generatedLength = desiredMessage.length - customerOnlyMessage.length;
+
+    if (desiredMessage.length > CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH) {
+      this.setState({
+        orderCommentErrorLimit: Math.max(
+          0,
+          CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH - generatedLength,
+        ),
+      });
+      return;
+    }
+
+    const submittedCartId = cart.id;
+    const submittedDealerId = applicableDealer?.fflID;
+    this.orderCommentSaveInFlight = true;
+    this.setState({ isSavingOrderComment: true, orderCommentErrorLimit: undefined });
+
     try {
-      if (customerMessage !== orderComment) {
-        await updateCheckout({ customerMessage: orderComment });
+      if ((customerMessage ?? '') !== desiredMessage) {
+        await updateCheckout({ customerMessage: desiredMessage });
       }
 
-      navigateNextStep(false);
+      const currentCartId = this.props.getCheckoutState()?.data?.getCart?.()?.id;
+      const currentDealerId =
+        this.props.fflToOrderComments && this.props.selectedFFL && this.getFFLItems().length > 0
+          ? this.props.selectedFFL.fflID
+          : undefined;
+
+      if (
+        !this.isUnmounted &&
+        submittedCartId === currentCartId &&
+        submittedDealerId === currentDealerId &&
+        (this.props.orderCommentDraft === undefined ||
+          this.props.orderCommentDraft === orderComment)
+      ) {
+        navigateNextStep(false);
+      }
     } catch (error) {
       onUnhandledError(error);
+    } finally {
+      this.orderCommentSaveInFlight = false;
+      if (!this.isUnmounted) {
+        this.setState({ isSavingOrderComment: false });
+      }
     }
   };
 
@@ -2168,7 +2247,11 @@ export class DealerShipping extends React.PureComponent<
 
   private shouldDisableSubmit: () => boolean = () => {
     const { cart, isLoading, consignments, isValid } = this.props;
-    const { isLoading: isStoreSettingsLoading, isUpdatingShippingData } = this.state;
+    const {
+      isLoading: isStoreSettingsLoading,
+      isSavingOrderComment,
+      isUpdatingShippingData,
+    } = this.state;
 
     if (isValid === false) {
       return true;
@@ -2183,7 +2266,7 @@ export class DealerShipping extends React.PureComponent<
       hasSelectedShippingOptions: hasSelectedShippingOptions(consignments),
       hasUnassignedLineItems: hasUnassignedLineItems(consignments, cart.lineItems),
       isAmmoStateSelectionPending: this.isAmmoStateSelectionPending(),
-      isLoading: isLoading || isStoreSettingsLoading,
+      isLoading: isLoading || isStoreSettingsLoading || isSavingOrderComment,
       isUpdatingShippingData,
       requiresAmmoRoutingReconciliation: this.state.requiresAmmoRoutingReconciliation,
     });

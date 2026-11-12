@@ -179,6 +179,8 @@ export interface CheckoutState {
     selectedFFL: any;
     fflToOrderComments: boolean;
     requiresFreshFflSelection: boolean;
+    requiresShippingCommentConfirmation: boolean;
+    shippingOrderCommentDraft?: string;
     withAmmoSubscription: boolean;
     buttonConfigs: PaymentMethod[];
     confirmedAmmoRoutingSession?: ConfirmedAmmoRoutingSession;
@@ -233,7 +235,10 @@ export class Checkout extends Component<
         pickup: { ...initialPickupState },
         enableInStorePickup: false,
         selectedFFL: null,
+        fflToOrderComments: false,
         requiresFreshFflSelection: false,
+        requiresShippingCommentConfirmation: false,
+        shippingOrderCommentDraft: undefined,
         fflLineItems: [],
         fflProducts: [],
         fflStateRestrictedItems: [],
@@ -277,7 +282,6 @@ export class Checkout extends Component<
     private isFflRelatedCart = false;
     private pickupInitialized = false;
     private hasExplicitMultiShippingChoice = false;
-    private shippingOrderCommentDraft?: string;
     private classifiedCartSignature?: string;
     private pickupController = new PickupController({
         isEnabled: () => this.state.enableInStorePickup,
@@ -318,6 +322,7 @@ export class Checkout extends Component<
 
             await new Promise<void>((resolve) => this.setState({
                 requiresFreshFflSelection: this.isFflRelatedCart,
+                requiresShippingCommentConfirmation: this.isFflRelatedCart,
                 selectedFFL: null, confirmedAmmoRoutingSession: undefined, customerAddressSelection: undefined,
             }, resolve));
         },
@@ -445,6 +450,8 @@ export class Checkout extends Component<
         this.setState({
             isResolvingFflShipping: true,
             requiresFreshFflSelection: true,
+            requiresShippingCommentConfirmation: true,
+            shippingOrderCommentDraft: undefined,
         });
 
         this.customerIdentityResetPromise = this.customerIdentityResetPromise
@@ -478,6 +485,10 @@ export class Checkout extends Component<
         }
 
         this.customerIdentityKey = identityKey;
+        this.setState({
+            requiresShippingCommentConfirmation: this.isFflRelatedCart,
+            shippingOrderCommentDraft: undefined,
+        });
         void this.queueCustomerIdentityReset(state, identityKey);
     };
 
@@ -619,6 +630,7 @@ export class Checkout extends Component<
                 isResolvingFflShipping: false,
                 isSubscribed: defaultNewsletterSignupOption,
                 requiresFreshFflSelection: hasFflRelatedItems && !this.state.selectedFFL,
+                requiresShippingCommentConfirmation: hasFflRelatedItems,
             });
 
             const requiresFreshFflSelection = shouldRequireFreshFflSelection(
@@ -839,8 +851,10 @@ export class Checkout extends Component<
         }, active ? <PickupShipping
             pickup={pickup}
             customerMessage={this.props.getCheckoutState().data.getCheckout()?.customerMessage}
+            orderCommentDraft={this.state.shippingOrderCommentDraft}
             showOrderComments={Boolean(this.props.getCheckoutState().data.getConfig()?.checkoutSettings.enableOrderComments)}
             onConfirm={(message) => this.pickupController.confirm(message)}
+            onOrderCommentChange={this.setShippingOrderCommentDraft}
             onShipping={(message) => this.pickupController.chooseShipping(message)}
             onSelect={(id) => this.pickupController.chooseMethod(id)}
             onZipChange={(zip) => this.pickupController.setZip(zip)}
@@ -852,14 +866,19 @@ export class Checkout extends Component<
                 disabled={pickup.transitioning}
                 onChange={(intent) => {
                     if (intent === 'pickup') {
-                        void this.pickupController.choosePickup(this.shippingOrderCommentDraft);
-                        this.shippingOrderCommentDraft = undefined;
+                        this.pickupController
+                            .choosePickup(this.state.shippingOrderCommentDraft)
+                            .catch((error: unknown) => this.handleUnhandledError(
+                                error instanceof Error ? error : new Error('Unable to select pickup'),
+                            ));
                     }
                 }}
             />}
             <div onChangeCapture={(event) => {
                 const input = event.target as HTMLInputElement;
-                if (input.name === 'orderComment') { this.shippingOrderCommentDraft = input.value; }
+                if (input.name === 'orderComment') {
+                    this.setShippingOrderCommentDraft(input.value);
+                }
             }}>{shell.props.children}</div>
         </>);
     }
@@ -901,6 +920,8 @@ export class Checkout extends Component<
                         onSignIn={this.handleShippingSignIn}
                         onToggleMultiShipping={this.handleToggleMultiShipping}
                         onUnhandledError={this.handleUnhandledError}
+                        onOrderCommentChange={this.setShippingOrderCommentDraft}
+                        orderCommentDraft={this.state.shippingOrderCommentDraft}
                         step={step}
                     />
                 </LazyContainer>
@@ -956,12 +977,15 @@ export class Checkout extends Component<
                         stateRestrictedConsignmentItems={ stateRestrictedConsignmentItems }
                         storeHash={ this.state.storeHash }
                         selectedFFL={ this.state.selectedFFL }
+                        fflToOrderComments={ this.state.fflToOrderComments }
                         clearConfirmedAmmoRoutingSession={ this.clearConfirmedAmmoRoutingSession }
                         confirmAmmoRoutingSession={ this.confirmAmmoRoutingSession }
                         setSelectedFFL={ this.setSelectedFFL }
                         setCustomerAddressSelection={ this.setCustomerAddressSelection }
                         setFFLtoOrderComments={ this.setFFLtoOrderComments }
                         setWithAmmoSubscription={ this.setWithAmmoSubscription }
+                        onOrderCommentChange={ this.setShippingOrderCommentDraft }
+                        orderCommentDraft={ this.state.shippingOrderCommentDraft }
                     />
                   </LazyContainer>
               </CheckoutStep>
@@ -1020,8 +1044,6 @@ export class Checkout extends Component<
                         onSubmitError={this.handleError}
                         onUnhandledError={this.handleUnhandledError}
                         storeHash={this.state.storeHash}
-                        selectedFFL={this.state.selectedFFL}
-                        fflToOrderComments={this.state.fflToOrderComments}
                     />
                 </LazyContainer>
             </CheckoutStep>
@@ -1089,7 +1111,7 @@ export class Checkout extends Component<
         options,
     ) => {
         const { steps, analyticsTracker } = this.props;
-        const { requiresFreshFflSelection } = this.state;
+        const { requiresFreshFflSelection, requiresShippingCommentConfirmation } = this.state;
         const activeStepIndex = findIndex(steps, { isActive: true });
         const activeStep = activeStepIndex >= 0 && steps[activeStepIndex];
 
@@ -1107,7 +1129,9 @@ export class Checkout extends Component<
         // refresh. Once the customer step is complete, force every FFL-related
         // checkout through Shipping until that step is successfully submitted.
         if (
-            (this.needsPickupConfirmation() || (requiresFreshFflSelection && !this.pickupController.isReady())) &&
+            (this.needsPickupConfirmation() ||
+                requiresShippingCommentConfirmation ||
+                (requiresFreshFflSelection && !this.pickupController.isReady())) &&
             shouldForceFreshFflShippingStep(steps)
         ) {
             this.navigateToStep(CheckoutStepType.Shipping, options);
@@ -1203,10 +1227,19 @@ export class Checkout extends Component<
     };
 
     private handleEditStep: (type: CheckoutStepType) => void = (type) => {
+        if (type === CheckoutStepType.Shipping && this.isFflRelatedCart) {
+            this.setState({ requiresShippingCommentConfirmation: true }, () => {
+                this.navigateToStep(type);
+            });
+            return;
+        }
+
         if (
             type !== CheckoutStepType.Customer &&
             type !== CheckoutStepType.Shipping &&
-            (this.needsPickupConfirmation() || (this.state.requiresFreshFflSelection && !this.pickupController.isReady())) &&
+            (this.needsPickupConfirmation() ||
+                this.state.requiresShippingCommentConfirmation ||
+                (this.state.requiresFreshFflSelection && !this.pickupController.isReady())) &&
             shouldForceFreshFflShippingStep(this.props.steps)
         ) {
             this.navigateToStep(CheckoutStepType.Shipping);
@@ -1273,6 +1306,7 @@ export class Checkout extends Component<
             {
                 isBillingSameAsShipping,
                 requiresFreshFflSelection: false,
+                requiresShippingCommentConfirmation: false,
             },
             () => {
                 if (isBillingSameAsShipping) {
@@ -1313,9 +1347,26 @@ export class Checkout extends Component<
         analyticsTracker.exitCheckout();
     }
 
+    private setShippingOrderCommentDraft = (value: string): void => {
+        if (
+            this.state.shippingOrderCommentDraft === value &&
+            this.state.requiresShippingCommentConfirmation
+        ) {
+            return;
+        }
+
+        this.setState({
+            shippingOrderCommentDraft: value,
+            requiresShippingCommentConfirmation: this.isFflRelatedCart,
+        });
+    };
+
     private setSelectedFFL: () => void = (value) => {
         if (this.pickupController.isPickup()) { return; }
-        this.setState({ selectedFFL: value });
+        this.setState({
+            selectedFFL: value,
+            requiresShippingCommentConfirmation: this.isFflRelatedCart,
+        });
     }
 
     private setCustomerAddressSelection = (customerAddressSelection?: Address): void => {
@@ -1350,7 +1401,10 @@ export class Checkout extends Component<
     };
 
     private setFFLtoOrderComments: () => void = (value) => {
-        this.setState({ fflToOrderComments: value });
+        this.setState({
+            fflToOrderComments: value,
+            requiresShippingCommentConfirmation: this.isFflRelatedCart,
+        });
     }
 
     private setWithAmmoSubscription: () => void = (value) => {

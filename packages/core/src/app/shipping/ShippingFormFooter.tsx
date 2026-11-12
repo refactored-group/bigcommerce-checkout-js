@@ -19,6 +19,7 @@ export interface ShippingFormFooterProps {
     shouldDisableSubmit: boolean;
     isInitialValueLoaded: boolean;
     isLoading: boolean;
+    onOrderCommentChange?(value: string): void;
 }
 
 const ShippingFormFooter: FunctionComponent<ShippingFormFooterProps> = ({
@@ -29,6 +30,7 @@ const ShippingFormFooter: FunctionComponent<ShippingFormFooterProps> = ({
     shouldDisableSubmit,
     isInitialValueLoaded,
     isLoading,
+    onOrderCommentChange,
 }) => {
     return (
         <>
@@ -59,7 +61,9 @@ const ShippingFormFooter: FunctionComponent<ShippingFormFooterProps> = ({
                 />
             </Fieldset>
 
-            {shouldShowOrderComments && <OrderComments />}
+            {shouldShowOrderComments && (
+                <OrderComments disabled={isLoading} onChange={onOrderCommentChange} />
+            )}
 
             <div className="form-actions">
                 <Button

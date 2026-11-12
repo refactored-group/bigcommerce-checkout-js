@@ -496,6 +496,8 @@
             "cart_change_error": "An update to your shopping cart has been detected and your available shipping costs have been updated. Please re-select a shipping method to continue.",
             "enter_shipping_address_text": "Please enter a shipping address in order to see shipping quotes",
             "order_comment_label": "Order Comments",
+            "order_comment_too_long_error": "Shorten your order comment to {count} characters or fewer.",
+            "order_comment_too_long_hidden_error": "We could not save the shipping details for this order. Please contact the store before continuing.",
             "assign_item_error": "An error occurred while assigning item to address. Please try again",
             "assign_item_invalid_address_error_heading": "Invalid Address",
             "assign_item_invalid_address_error": "The selected address is not valid. Please go to your account page and update it.",

@@ -12,6 +12,7 @@ import { getCart } from '../cart/carts.mock';
 import { getPhysicalItem } from '../cart/lineItem.mock';
 import { getStoreConfig } from '../config/config.mock';
 import { getCustomer } from '../customer/customers.mock';
+import composeFFLCheckoutNotes from '../order/composeFFLCheckoutNotes';
 
 import { getConsignment } from './consignment.mock';
 import ItemAddressSelect from './ItemAddressSelect';
@@ -101,6 +102,38 @@ describe('MultiShippingForm Component', () => {
                     addresses: defaultProps.addresses,
                 }),
             );
+        });
+
+        it('shows customer-only text and gives an intentional empty draft precedence', () => {
+            const dealer = { fflID: '6-04-123-01-5F-03791' };
+            const combined = composeFFLCheckoutNotes('Customer text', dealer);
+            const savedValue = mount(
+                <CheckoutProvider checkoutService={checkoutService}>
+                    <LocaleContext.Provider value={localeContext}>
+                        <ExtensionProvider checkoutService={checkoutService}>
+                            <MultiShippingForm {...defaultProps} customerMessage={combined} />
+                        </ExtensionProvider>
+                    </LocaleContext.Provider>
+                </CheckoutProvider>,
+            );
+            const clearedDraft = mount(
+                <CheckoutProvider checkoutService={checkoutService}>
+                    <LocaleContext.Provider value={localeContext}>
+                        <ExtensionProvider checkoutService={checkoutService}>
+                            <MultiShippingForm
+                                {...defaultProps}
+                                customerMessage={combined}
+                                orderCommentDraft=""
+                            />
+                        </ExtensionProvider>
+                    </LocaleContext.Provider>
+                </CheckoutProvider>,
+            );
+
+            expect(savedValue.find('input[name="orderComment"]').prop('value')).toBe(
+                'Customer text',
+            );
+            expect(clearedDraft.find('input[name="orderComment"]').prop('value')).toBe('');
         });
 
         it('renders address form modal when shoppers choose new address', async () => {

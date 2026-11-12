@@ -3,6 +3,7 @@ import React, { PureComponent, ReactNode } from 'react';
 import { withFormik } from 'formik';
 
 import { withLanguage, TranslatedString, WithLanguageProps } from '@bigcommerce/checkout/locale';
+import stripFFLFromCheckoutNotes from '../../order/stripFFLFromCheckoutNotes';
 import { OrderComments } from '../../orderComments';
 import { Alert, AlertType } from '../../ui/alert';
 import { Button, ButtonVariant } from '../../ui/button';
@@ -19,9 +20,26 @@ export interface ShippingFormFooterProps {
     customerMessage: string;
     onSubmit: any;
     handleSubmit?: any;
+    onOrderCommentChange?(value: string): void;
+    readonly orderCommentDraft?: string;
+    readonly orderCommentErrorLimit?: number;
 }
 
 class ShippingFormFooter extends PureComponent<ShippingFormFooterProps> {
+    componentDidUpdate(previousProps: ShippingFormFooterProps): void {
+        const previousSeed = previousProps.orderCommentDraft ??
+            stripFFLFromCheckoutNotes(previousProps.customerMessage);
+        const nextSeed = this.props.orderCommentDraft ??
+            stripFFLFromCheckoutNotes(this.props.customerMessage);
+
+        if (
+            previousSeed !== nextSeed &&
+            this.props.values.orderComment === previousSeed
+        ) {
+            this.props.setFieldValue('orderComment', nextSeed, false);
+        }
+    }
+
     render(): ReactNode {
         const {
             cartHasChanged,
@@ -29,6 +47,8 @@ class ShippingFormFooter extends PureComponent<ShippingFormFooterProps> {
             shouldShowShippingOptions = true,
             shouldDisableSubmit,
             isLoading,
+            onOrderCommentChange,
+            orderCommentErrorLimit,
         } = this.props;
 
         return <>
@@ -57,7 +77,19 @@ class ShippingFormFooter extends PureComponent<ShippingFormFooterProps> {
             </Fieldset>
 
             { shouldShowOrderComments &&
-                <OrderComments /> }
+                <OrderComments disabled={isLoading} onChange={onOrderCommentChange} /> }
+
+            { orderCommentErrorLimit !== undefined &&
+                <Alert type={ AlertType.Error }>
+                    <TranslatedString
+                        data={ { count: orderCommentErrorLimit } }
+                        id={
+                            shouldShowOrderComments && orderCommentErrorLimit > 0
+                                ? 'shipping.order_comment_too_long_error'
+                                : 'shipping.order_comment_too_long_hidden_error'
+                        }
+                    />
+                </Alert> }
 
             <div className="form-actions">
                 <Button
@@ -83,11 +115,11 @@ export interface MultiShippingFormValues {
 }
 
 export default withLanguage(withFormik<ShippingFormFooterProps & WithLanguageProps, MultiShippingFormValues>({
-    handleSubmit: (values, { props: { onSubmit } }) => {
-        onSubmit(values);
+    handleSubmit: async (values, { props: { onSubmit } }) => {
+        await onSubmit(values);
     },
-    mapPropsToValues: ({ customerMessage }) => ({
-        orderComment: customerMessage,
+    mapPropsToValues: ({ customerMessage, orderCommentDraft }) => ({
+        orderComment: orderCommentDraft ?? stripFFLFromCheckoutNotes(customerMessage),
     }),
-    enableReinitialize: true,
+    enableReinitialize: false,
 })(ShippingFormFooter));

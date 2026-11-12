@@ -9,6 +9,7 @@ import { render, screen } from '@bigcommerce/checkout/test-utils';
 
 import { getAddressFormFields } from '../address/formField.mock';
 import { getStoreConfig } from '../config/config.mock';
+import composeFFLCheckoutNotes from '../order/composeFFLCheckoutNotes';
 
 import { getShippingAddress } from './shipping-addresses.mock';
 import SingleShippingForm, { SingleShippingFormProps } from './SingleShippingForm';
@@ -74,6 +75,50 @@ describe('SingleShippingForm', () => {
         unmount();
         await new Promise((resolve) => setTimeout(resolve, waitingDelay));
         expect(updateAddress).not.toHaveBeenCalled();
+    });
+
+    it('strips generated metadata and only synchronizes a pristine comment', async () => {
+        const dealer = { fflID: '6-04-123-01-5F-03791' };
+        const firstProps = {
+            customerMessage: composeFFLCheckoutNotes('First customer note', dealer),
+        };
+        const view = renderSingleShippingFormComponent(firstProps);
+        const commentInput = screen.getByDisplayValue('First customer note');
+
+        // eslint-disable-next-line jest-dom/prefer-to-have-attribute
+        expect(commentInput.getAttribute('value')).toBe('First customer note');
+
+        view.rerender(
+            createSingleShippingFormComponent({
+                customerMessage: composeFFLCheckoutNotes('Saved server note', dealer),
+            }),
+        );
+        // eslint-disable-next-line jest-dom/prefer-to-have-attribute
+        expect(commentInput.getAttribute('value')).toBe('Saved server note');
+
+        await userEvent.clear(commentInput);
+        await userEvent.type(commentInput, 'Local unsaved edit');
+        view.rerender(
+            createSingleShippingFormComponent({
+                customerMessage: composeFFLCheckoutNotes('Later server note', dealer),
+            }),
+        );
+        // eslint-disable-next-line jest-dom/prefer-to-have-attribute
+        expect(commentInput.getAttribute('value')).toBe('Local unsaved edit');
+    });
+
+    it('treats an empty draft as an intentional clear', () => {
+        renderSingleShippingFormComponent({
+            customerMessage: 'Saved customer note',
+            orderCommentDraft: '',
+        });
+        const commentInputs = screen
+            .getAllByRole('textbox')
+            .filter((input) => input.getAttribute('name') === 'orderComment');
+
+        expect(commentInputs).toHaveLength(1);
+        // eslint-disable-next-line jest-dom/prefer-to-have-attribute
+        expect(commentInputs[0].getAttribute('value')).toBe('');
     });
 
     it('calls updateAddress with last event during a given timeframe', async () => {

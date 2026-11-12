@@ -21,3 +21,15 @@ it('does not remove ordinary FFL mentions, unknown URLs, or partial notes', () =
   }
   expect(stripFFLFromCheckoutNotes()).toBe('');
 });
+
+it('preserves every non-generated character around multiple complete blocks', () => {
+  const message = `  before |${block} middle${block}${certificate}\n after  `;
+
+  expect(stripFFLFromCheckoutNotes(message)).toBe('  before | middle\n after  ');
+});
+
+it('requires the known certificate host when removing the optional segment', () => {
+  const unknownCertificate = '|Certificate:https://example.com/certificate';
+
+  expect(stripFFLFromCheckoutNotes(`${block}${unknownCertificate}`)).toBe(unknownCertificate);
+});

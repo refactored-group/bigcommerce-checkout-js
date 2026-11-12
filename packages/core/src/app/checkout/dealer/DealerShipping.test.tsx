@@ -2,6 +2,9 @@ import { Address } from '@bigcommerce/checkout-sdk';
 import { groupBy, identity, isEqual, pickBy } from 'lodash';
 
 import { AddressFormModal } from '../../address';
+import composeFFLCheckoutNotes, {
+  CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH,
+} from '../../order/composeFFLCheckoutNotes';
 
 import { DealerShipping } from './DealerShipping';
 import { createFflConsignmentCoordinator } from './fflConsignmentCoordinator';
@@ -49,6 +52,12 @@ const committedDealerAddress = {
   ...dealerAddress,
   firstName: 'Jane',
   lastName: 'Doe',
+};
+
+const confirmedDealer = {
+  ...dealerAddress,
+  fflID: '6-04-123-01-5F-03791',
+  uuid: 'certificate-uuid',
 };
 
 const makeCheckoutSelectors = (
@@ -128,6 +137,7 @@ const makeProps = (isGuest = false) => {
     fflConsignmentItems: [{ itemId: 'gun-1', quantity: 1 }],
     fflConsignmentCoordinator: undefined as any,
     fflProducts: [{ conditions: [{ states: ['CA', 'NY'], type: 'ship_state' }] }],
+    fflToOrderComments: false,
     getCheckoutState: jest.fn(),
     getFields: jest.fn().mockReturnValue([]),
     loadShippingAddressFields: jest.fn().mockResolvedValue({}),
@@ -139,7 +149,9 @@ const makeProps = (isGuest = false) => {
     navigateNextStep: jest.fn(),
     onHandoffError: jest.fn(),
     onUnhandledError: jest.fn(),
-    selectedFFL: null,
+    onOrderCommentChange: jest.fn(),
+    orderCommentDraft: undefined as string | undefined,
+    selectedFFL: null as any,
     setFFLtoOrderComments: jest.fn(),
     setCustomerAddressSelection: jest.fn(),
     setSelectedFFL: jest.fn(),
@@ -188,6 +200,36 @@ const makeSubject = (
   };
 
   return { props, subject };
+};
+
+const makeReadyCommentSubject = (
+  prepareProps?: (props: ReturnType<typeof makeProps>) => void,
+) => {
+  const result = makeSubject(false, (props) => {
+    props.cart.lineItems.physicalItems = [
+      { addedByPromotion: false, id: 'gun-1', parentId: null, quantity: 1 },
+    ];
+    props.stateRestrictedConsignmentItems = [];
+    props.consignments = [
+      {
+        availableShippingOptions: [{ id: 'dealer-free' }],
+        id: 'dealer-consignment',
+        lineItemIds: ['gun-1'],
+        selectedShippingOption: { id: 'dealer-free' },
+        shippingAddress: committedDealerAddress,
+      },
+    ] as any;
+    props.fflToOrderComments = true;
+    props.selectedFFL = confirmedDealer;
+    prepareProps?.(props);
+  });
+
+  result.subject.state = {
+    ...result.subject.state,
+    selectedDealer: confirmedDealer,
+  };
+
+  return result;
 };
 
 const normalizeSdkAddress = (address: Address) =>
@@ -1133,6 +1175,142 @@ describe('DealerShipping ammo reconciliation', () => {
 
     await (subject as any).handleMultiShippingSubmit({ orderComment: '' });
 
+    expect(props.navigateNextStep).toHaveBeenCalledWith(false);
+  });
+
+  it('persists the complete customer note and FFL block before navigating', async () => {
+    let releaseSave: (() => void) | undefined;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    const { props, subject } = makeReadyCommentSubject((nextProps) => {
+      nextProps.orderCommentDraft = 'Call before shipping';
+      nextProps.updateCheckout.mockImplementation(async () => saveGate);
+    });
+
+    const firstSubmit = (subject as any).handleMultiShippingSubmit({
+      orderComment: 'Call before shipping',
+    });
+    const duplicateSubmit = (subject as any).handleMultiShippingSubmit({
+      orderComment: 'Call before shipping',
+    });
+
+    expect(props.updateCheckout).toHaveBeenCalledTimes(1);
+    expect(props.updateCheckout).toHaveBeenCalledWith({
+      customerMessage: composeFFLCheckoutNotes('Call before shipping', confirmedDealer),
+    });
+    expect(props.navigateNextStep).not.toHaveBeenCalled();
+    expect(subject.state.isSavingOrderComment).toBe(true);
+
+    releaseSave?.();
+    await Promise.all([firstSubmit, duplicateSubmit]);
+
+    expect(props.navigateNextStep).toHaveBeenCalledTimes(1);
+    expect(props.navigateNextStep).toHaveBeenCalledWith(false);
+    expect(subject.state.isSavingOrderComment).toBe(false);
+  });
+
+  it('keeps the draft and permits a retry when the comment save fails', async () => {
+    const saveError = new Error('comment save failed');
+    const { props, subject } = makeReadyCommentSubject((nextProps) => {
+      nextProps.orderCommentDraft = 'Keep this draft';
+      nextProps.updateCheckout
+        .mockRejectedValueOnce(saveError)
+        .mockResolvedValueOnce({});
+    });
+
+    await (subject as any).handleMultiShippingSubmit({ orderComment: 'Keep this draft' });
+
+    expect(props.onUnhandledError).toHaveBeenCalledWith(saveError);
+    expect(props.navigateNextStep).not.toHaveBeenCalled();
+    expect(props.orderCommentDraft).toBe('Keep this draft');
+
+    await (subject as any).handleMultiShippingSubmit({ orderComment: 'Keep this draft' });
+
+    expect(props.updateCheckout).toHaveBeenCalledTimes(2);
+    expect(props.navigateNextStep).toHaveBeenCalledWith(false);
+  });
+
+  it('does not navigate after a successful stale save', async () => {
+    let releaseSave: (() => void) | undefined;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    const { props, subject } = makeReadyCommentSubject((nextProps) => {
+      nextProps.orderCommentDraft = 'Original draft';
+      nextProps.updateCheckout.mockImplementation(async () => saveGate);
+    });
+    const submit = (subject as any).handleMultiShippingSubmit({ orderComment: 'Original draft' });
+
+    props.orderCommentDraft = 'Edited while saving';
+    releaseSave?.();
+    await submit;
+
+    expect(props.navigateNextStep).not.toHaveBeenCalled();
+  });
+
+  it('accepts an exact 2,000-character Unicode value and rejects 2,001 without truncation', async () => {
+    const block = composeFFLCheckoutNotes('', confirmedDealer);
+    const exactCustomerMessage =
+      `🙂${'x'.repeat(CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH - block.length - 2)}`;
+    const { props, subject } = makeReadyCommentSubject();
+
+    await (subject as any).handleMultiShippingSubmit({
+      orderComment: exactCustomerMessage.slice(0, -1),
+    });
+    expect(props.updateCheckout.mock.calls[0][0].customerMessage).toHaveLength(1999);
+
+    props.updateCheckout.mockClear();
+    props.navigateNextStep.mockClear();
+
+    await (subject as any).handleMultiShippingSubmit({ orderComment: exactCustomerMessage });
+
+    const exactCombined = composeFFLCheckoutNotes(exactCustomerMessage, confirmedDealer);
+    expect(exactCombined).toHaveLength(CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH);
+    expect(props.updateCheckout).toHaveBeenCalledWith({ customerMessage: exactCombined });
+    expect(props.navigateNextStep).toHaveBeenCalledWith(false);
+
+    props.updateCheckout.mockClear();
+    props.navigateNextStep.mockClear();
+    await (subject as any).handleMultiShippingSubmit({ orderComment: `${exactCustomerMessage}x` });
+
+    expect(props.updateCheckout).not.toHaveBeenCalled();
+    expect(props.navigateNextStep).not.toHaveBeenCalled();
+    expect(subject.state.orderCommentErrorLimit).toBe(exactCustomerMessage.length);
+  });
+
+  it('skips an unchanged generated-only value while still advancing hidden comments', async () => {
+    const generatedOnly = composeFFLCheckoutNotes('', confirmedDealer);
+    const { props, subject } = makeReadyCommentSubject((nextProps) => {
+      nextProps.customerMessage = generatedOnly;
+    });
+
+    await (subject as any).handleMultiShippingSubmit({ orderComment: '' });
+
+    expect(props.updateCheckout).not.toHaveBeenCalled();
+    expect(props.navigateNextStep).toHaveBeenCalledWith(false);
+  });
+
+  it('replaces or removes old generated blocks from the raw saved value', async () => {
+    const oldDealer = { fflID: '1-23-456-01-7A-00001' };
+    const oldCombined = composeFFLCheckoutNotes('Customer text', oldDealer);
+    const { props, subject } = makeReadyCommentSubject((nextProps) => {
+      nextProps.customerMessage = `${oldCombined}${composeFFLCheckoutNotes('', oldDealer)}`;
+    });
+
+    await (subject as any).handleMultiShippingSubmit({ orderComment: 'Customer text' });
+
+    expect(props.updateCheckout).toHaveBeenCalledWith({
+      customerMessage: composeFFLCheckoutNotes('Customer text', confirmedDealer),
+    });
+
+    props.updateCheckout.mockClear();
+    props.navigateNextStep.mockClear();
+    props.customerMessage = composeFFLCheckoutNotes('Customer text', confirmedDealer);
+    props.fflToOrderComments = false;
+    await (subject as any).handleMultiShippingSubmit({ orderComment: 'Customer text' });
+
+    expect(props.updateCheckout).toHaveBeenCalledWith({ customerMessage: 'Customer text' });
     expect(props.navigateNextStep).toHaveBeenCalledWith(false);
   });
 

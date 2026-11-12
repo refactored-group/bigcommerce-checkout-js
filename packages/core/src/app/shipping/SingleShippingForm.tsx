@@ -29,6 +29,7 @@ import {
 } from '../address';
 import { withFormikExtended } from '../common/form';
 import { getCustomFormFieldsValidationSchema } from '../formFields';
+import stripFFLFromCheckoutNotes from '../order/stripFFLFromCheckoutNotes';
 import { PaymentMethodId } from '../payment/paymentMethod';
 import { Fieldset, Form } from '../ui/form';
 
@@ -46,6 +47,7 @@ export interface SingleShippingFormProps {
     countries: Country[];
     countriesWithAutocomplete: string[];
     customerMessage: string;
+    orderCommentDraft?: string;
     googleMapsApiKey?: string;
     isLoading: boolean;
     isShippingStepPending: boolean;
@@ -62,6 +64,7 @@ export interface SingleShippingFormProps {
     getFields(countryCode?: string): FormField[];
     initialize(options: ShippingInitializeOptions): Promise<CheckoutSelectors>;
     onSubmit(values: SingleShippingFormValues): void;
+    onOrderCommentChange?(value: string): void;
     onUnhandledError?(error: Error): void;
     signOut(options?: CustomerRequestOptions): void;
     updateAddress(
@@ -106,6 +109,20 @@ class SingleShippingForm extends PureComponent<
 
     private debouncedUpdateAddress: any;
     private isUnmounted = false;
+
+    componentDidUpdate(previousProps: SingleShippingFormProps & FormikProps<SingleShippingFormValues>): void {
+        const previousSeed = previousProps.orderCommentDraft ??
+            stripFFLFromCheckoutNotes(previousProps.customerMessage);
+        const nextSeed = this.props.orderCommentDraft ??
+            stripFFLFromCheckoutNotes(this.props.customerMessage);
+
+        if (
+            previousSeed !== nextSeed &&
+            this.props.values.orderComment === previousSeed
+        ) {
+            this.props.setFieldValue('orderComment', nextSeed, false);
+        }
+    }
 
     componentWillUnmount(): void {
         this.isUnmounted = true;
@@ -159,6 +176,7 @@ class SingleShippingForm extends PureComponent<
             shippingAddress,
             consignments,
             shouldShowOrderComments,
+            onOrderCommentChange,
             initialize,
             isValid,
             deinitialize,
@@ -214,6 +232,7 @@ class SingleShippingForm extends PureComponent<
                     shouldDisableSubmit={this.shouldDisableSubmit()}
                     shouldShowOrderComments={shouldShowOrderComments}
                     shouldShowShippingOptions={isValid}
+                    onOrderCommentChange={onOrderCommentChange}
                 />
             </Form>
         );
@@ -339,9 +358,10 @@ export default withLanguage(
             shippingAddress,
             isBillingSameAsShipping,
             customerMessage,
+            orderCommentDraft,
         }) => ({
             billingSameAsShipping: isBillingSameAsShipping,
-            orderComment: customerMessage,
+            orderComment: orderCommentDraft ?? stripFFLFromCheckoutNotes(customerMessage),
             shippingAddress: mapAddressToFormValues(
                 getFields(shippingAddress && shippingAddress.countryCode),
                 shippingAddress,

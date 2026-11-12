@@ -40,7 +40,9 @@ export const FulfillmentChoice: FunctionComponent<{
 interface Props {
   pickup: PickupState;
   customerMessage?: string;
+  readonly orderCommentDraft?: string;
   showOrderComments: boolean;
+  onOrderCommentChange?(value: string): void;
   onConfirm(message: string): Promise<void>;
   onShipping(message: string): Promise<void>;
   onSelect(id: number): void;
@@ -52,7 +54,9 @@ interface Props {
 const PickupShipping: FunctionComponent<Props> = ({
   pickup,
   customerMessage,
+  orderCommentDraft,
   showOrderComments,
+  onOrderCommentChange,
   onConfirm,
   onShipping,
   onSelect,
@@ -62,7 +66,9 @@ const PickupShipping: FunctionComponent<Props> = ({
 }) => (
   <Formik
     enableReinitialize
-    initialValues={{ orderComment: stripFFLFromCheckoutNotes(customerMessage) }}
+    initialValues={{
+      orderComment: orderCommentDraft ?? stripFFLFromCheckoutNotes(customerMessage),
+    }}
     onSubmit={({ orderComment }) => onConfirm(orderComment)}
   >
     {({ values }) => (
@@ -234,7 +240,12 @@ const PickupShipping: FunctionComponent<Props> = ({
             </ul>
           </fieldset>
         )}
-        {showOrderComments && <OrderComments />}
+        {showOrderComments && (
+          <OrderComments
+            disabled={pickup.transitioning}
+            onChange={onOrderCommentChange}
+          />
+        )}
         {!pickup.confirmedSignature && (
           <p>
             <TranslatedString id="pickup.totals_text" />

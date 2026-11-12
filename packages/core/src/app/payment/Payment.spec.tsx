@@ -21,6 +21,7 @@ import { getCheckout, getCheckoutPayment } from '../checkout/checkouts.mock';
 import { createErrorLogger, ErrorModal } from '../common/error';
 import { getStoreConfig } from '../config/config.mock';
 import { getCustomer } from '../customer/customers.mock';
+import composeFFLCheckoutNotes from '../order/composeFFLCheckoutNotes';
 import { getOrder } from '../order/orders.mock';
 import { getConsignment } from '../shipping/consignment.mock';
 import { Button } from '../ui/button';
@@ -85,6 +86,38 @@ describe('Payment', () => {
         container.setProps({});
     };
 
+    const submitWithPreSavedFflComments = async (customSubmit?: jest.Mock) => {
+        const combined = composeFFLCheckoutNotes('Customer note', {
+            fflID: '6-04-123-01-5F-03791',
+            uuid: 'certificate-uuid',
+        });
+        jest.spyOn(checkoutState.data, 'getCheckout').mockReturnValue({
+            ...getCheckout(),
+            customerMessage: combined,
+        });
+        jest.spyOn(checkoutState.data, 'getConsignments').mockReturnValue([getConsignment()]);
+        const update = jest.spyOn(checkoutService, 'updateCheckout').mockResolvedValue(checkoutState);
+        const submit = jest.spyOn(checkoutService, 'submitOrder').mockResolvedValue(checkoutState);
+        const container = mount(<PaymentTest {...defaultProps} />);
+
+        await new Promise((resolve) => process.nextTick(resolve));
+        container.update();
+
+        if (customSubmit) {
+            (container.find(PaymentComponent).instance() as any).setSubmit(
+                selectedPaymentMethod,
+                customSubmit,
+            );
+            container.update();
+        }
+
+        await container.find(PaymentForm).prop('onSubmit')?.({
+            paymentProviderRadio: selectedPaymentMethod.id,
+        });
+
+        return { container, submit, update };
+    };
+
     beforeEach(() => {
         checkoutService = createCheckoutService();
         checkoutState = checkoutService.getState();
@@ -132,6 +165,7 @@ describe('Payment', () => {
             onSubmit: jest.fn(),
             onSubmitError: jest.fn(),
             onUnhandledError: jest.fn(),
+            storeHash: 'store-hash',
         };
 
         PaymentTest = (props) => (
@@ -172,18 +206,59 @@ describe('Payment', () => {
         container.unmount();
     });
 
-    it('does not append retained dealer props to a native pickup order', async () => {
+    it('does not mutate pre-saved comments for a native pickup order', async () => {
         jest.spyOn(checkoutState.data, 'getConsignments').mockReturnValue([
             { ...getConsignment(), selectedShippingOption: undefined, selectedPickupOption: { pickupMethodId: 7 } },
         ]);
         const submit = jest.spyOn(checkoutService, 'submitOrder').mockResolvedValue(checkoutState);
         const update = jest.spyOn(checkoutService, 'updateCheckout').mockResolvedValue(checkoutState);
-        const container = mount(<PaymentTest {...defaultProps} fflToOrderComments selectedFFL={{ fflID: 'old-dealer' }}
-            pickupPreflight={jest.fn().mockResolvedValue(undefined)} />);
+        const container = mount(
+            <PaymentTest
+                {...defaultProps}
+                pickupPreflight={jest.fn().mockResolvedValue(undefined)}
+            />,
+        );
         await new Promise((resolve) => process.nextTick(resolve));
         container.update();
         await container.find(PaymentForm).prop('onSubmit')!({ paymentProviderRadio: selectedPaymentMethod.id });
         expect(submit).toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        container.unmount();
+    });
+
+    it('leaves pre-saved FFL comments untouched on normal payment submission', async () => {
+        const { container, submit, update } = await submitWithPreSavedFflComments();
+
+        expect(update).not.toHaveBeenCalled();
+        expect(submit).toHaveBeenCalledTimes(1);
+        container.unmount();
+    });
+
+    it('leaves pre-saved FFL comments untouched on custom payment submission', async () => {
+        const customSubmit = jest.fn().mockResolvedValue(undefined);
+        const { container, submit, update } = await submitWithPreSavedFflComments(customSubmit);
+
+        expect(update).not.toHaveBeenCalled();
+        expect(customSubmit).toHaveBeenCalledTimes(1);
+        expect(submit).not.toHaveBeenCalled();
+        container.unmount();
+    });
+
+    it('does not rebuild or duplicate comments across a failed payment retry', async () => {
+        const update = jest.spyOn(checkoutService, 'updateCheckout').mockResolvedValue(checkoutState);
+        const submit = jest
+            .spyOn(checkoutService, 'submitOrder')
+            .mockRejectedValueOnce(new Error('payment failed'))
+            .mockResolvedValueOnce(checkoutState);
+        const container = mount(<PaymentTest {...defaultProps} />);
+        await new Promise((resolve) => process.nextTick(resolve));
+        container.update();
+        const submitValues = { paymentProviderRadio: selectedPaymentMethod.id };
+
+        await container.find(PaymentForm).prop('onSubmit')?.(submitValues);
+        await container.find(PaymentForm).prop('onSubmit')?.(submitValues);
+
+        expect(submit).toHaveBeenCalledTimes(2);
         expect(update).not.toHaveBeenCalled();
         container.unmount();
     });
@@ -359,6 +434,7 @@ describe('Payment', () => {
             onSubmit: jest.fn(),
             onSubmitError: jest.fn(),
             onUnhandledError: jest.fn(),
+            storeHash: 'store-hash',
             usableStoreCredit: 10,
         };
 

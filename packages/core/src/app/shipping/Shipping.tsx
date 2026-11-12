@@ -25,6 +25,10 @@ import { isEqualAddress, mapAddressFromFormValues } from '../address';
 import { withCheckout } from '../checkout';
 import CheckoutStepStatus from '../checkout/CheckoutStepStatus';
 import { EMPTY_ARRAY, isFloatingLabelEnabled } from '../common/utility';
+import {
+    CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH,
+} from '../order/composeFFLCheckoutNotes';
+import stripFFLFromCheckoutNotes from '../order/stripFFLFromCheckoutNotes';
 import getProviderWithCustomCheckout from '../payment/getProviderWithCustomCheckout';
 import { PaymentMethodId } from '../payment/paymentMethod';
 
@@ -48,6 +52,8 @@ export interface ShippingProps {
     onUnhandledError(error: Error): void;
     onSignIn(): void;
     navigateNextStep(isBillingSameAsShipping: boolean): void;
+    orderCommentDraft?: string;
+    onOrderCommentChange?(value: string): void;
 }
 
 export interface WithCheckoutShippingProps {
@@ -89,6 +95,7 @@ export interface WithCheckoutShippingProps {
 
 interface ShippingState {
     isInitializing: boolean;
+    isSubmittingOrderComment: boolean;
 }
 
 class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, ShippingState> {
@@ -97,8 +104,12 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
 
         this.state = {
             isInitializing: true,
+            isSubmittingOrderComment: false,
         };
     }
+
+    private isUnmounted = false;
+    private orderCommentSaveInFlight = false;
 
     async componentDidMount(): Promise<void> {
         const {
@@ -120,6 +131,10 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
         }
     }
 
+    componentWillUnmount(): void {
+        this.isUnmounted = true;
+    }
+
     render(): ReactNode {
         const {
             isBillingSameAsShipping,
@@ -137,9 +152,7 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
             ...shippingFormProps
         } = this.props;
 
-        const {
-            isInitializing,
-        } = this.state;
+        const { isInitializing, isSubmittingOrderComment } = this.state;
 
         if (shouldRenderStripeForm && !customer.email && this.props.countries.length > 0) {
             return <StripeShipping
@@ -179,6 +192,7 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
                         isFloatingLabelEnabled={isFloatingLabelEnabled}
                         isGuest={isGuest}
                         isInitialValueLoaded={shouldRenderWhileLoading ? !isInitializing : true}
+                        isLoading={this.props.isLoading || isSubmittingOrderComment}
                         isMultiShippingMode={isMultiShippingMode}
                         onMultiShippingSubmit={this.handleMultiShippingSubmit}
                         onSingleShippingSubmit={this.handleSingleShippingSubmit}
@@ -221,6 +235,10 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
         shippingAddress: addressValues,
         orderComment,
     }) => {
+        if (this.orderCommentSaveInFlight) {
+            return;
+        }
+
         const {
             customerMessage,
             updateCheckout,
@@ -231,36 +249,64 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
             shippingAddress,
             billingAddress,
             methodId,
+            cart,
         } = this.props;
 
-        const updatedShippingAddress = addressValues && mapAddressFromFormValues(addressValues);
-        const promises: Array<Promise<CheckoutSelectors>> = [];
-        const hasRemoteBilling = this.hasRemoteBilling(methodId);
+        const customerOnlyMessage = stripFFLFromCheckoutNotes(orderComment);
 
-        if (!isEqualAddress(updatedShippingAddress, shippingAddress) || shippingAddress?.shouldSaveAddress !== updatedShippingAddress?.shouldSaveAddress) {
-            promises.push(updateShippingAddress(updatedShippingAddress || {}));
+        if (customerOnlyMessage.length > CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH) {
+            onUnhandledError(
+                new Error(
+                    `Shorten your order comment to ${CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH} characters or fewer.`,
+                ),
+            );
+            return;
         }
 
-        if (
-            billingSameAsShipping &&
-            updatedShippingAddress &&
-            !isEqualAddress(updatedShippingAddress, billingAddress) &&
-            !hasRemoteBilling
-        ) {
-            promises.push(updateBillingAddress(updatedShippingAddress));
-        }
-
-        if (customerMessage !== orderComment) {
-            promises.push(updateCheckout({ customerMessage: orderComment }));
-        }
+        this.orderCommentSaveInFlight = true;
+        this.setState({ isSubmittingOrderComment: true });
+        const submittedCartId = cart.id;
 
         try {
+            const updatedShippingAddress = addressValues && mapAddressFromFormValues(addressValues);
+            const promises: Array<Promise<CheckoutSelectors>> = [];
+            const hasRemoteBilling = this.hasRemoteBilling(methodId);
+
+            if (!isEqualAddress(updatedShippingAddress, shippingAddress) || shippingAddress?.shouldSaveAddress !== updatedShippingAddress?.shouldSaveAddress) {
+                promises.push(updateShippingAddress(updatedShippingAddress ?? {}));
+            }
+
+            if (
+                billingSameAsShipping &&
+                updatedShippingAddress &&
+                !isEqualAddress(updatedShippingAddress, billingAddress) &&
+                !hasRemoteBilling
+            ) {
+                promises.push(updateBillingAddress(updatedShippingAddress));
+            }
+
+            if (customerMessage !== customerOnlyMessage) {
+                promises.push(updateCheckout({ customerMessage: customerOnlyMessage }));
+            }
+
             await Promise.all(promises);
 
-            navigateNextStep(billingSameAsShipping);
+            if (
+                !this.isUnmounted &&
+                submittedCartId === this.props.cart.id &&
+                (this.props.orderCommentDraft === undefined ||
+                    this.props.orderCommentDraft === orderComment)
+            ) {
+                navigateNextStep(billingSameAsShipping);
+            }
         } catch (error) {
             if (error instanceof Error) {
                 onUnhandledError(error);
+            }
+        } finally {
+            this.orderCommentSaveInFlight = false;
+            if (!this.isUnmounted) {
+                this.setState({ isSubmittingOrderComment: false });
             }
         }
     };
@@ -299,17 +345,47 @@ class Shipping extends Component<ShippingProps & WithCheckoutShippingProps, Ship
     private handleMultiShippingSubmit: (values: MultiShippingFormValues) => void = async ({
         orderComment,
     }) => {
-        const { customerMessage, updateCheckout, navigateNextStep, onUnhandledError } = this.props;
+        if (this.orderCommentSaveInFlight) {
+            return;
+        }
+
+        const { cart, customerMessage, updateCheckout, navigateNextStep, onUnhandledError } = this.props;
+        const customerOnlyMessage = stripFFLFromCheckoutNotes(orderComment);
+
+        if (customerOnlyMessage.length > CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH) {
+            onUnhandledError(
+                new Error(
+                    `Shorten your order comment to ${CHECKOUT_CUSTOMER_MESSAGE_MAX_LENGTH} characters or fewer.`,
+                ),
+            );
+            return;
+        }
+
+        this.orderCommentSaveInFlight = true;
+        this.setState({ isSubmittingOrderComment: true });
+        const submittedCartId = cart.id;
 
         try {
-            if (customerMessage !== orderComment) {
-                await updateCheckout({ customerMessage: orderComment });
+            if (customerMessage !== customerOnlyMessage) {
+                await updateCheckout({ customerMessage: customerOnlyMessage });
             }
 
-            navigateNextStep(false);
+            if (
+                !this.isUnmounted &&
+                submittedCartId === this.props.cart.id &&
+                (this.props.orderCommentDraft === undefined ||
+                    this.props.orderCommentDraft === orderComment)
+            ) {
+                navigateNextStep(false);
+            }
         } catch (error) {
             if (error instanceof Error) {
                 onUnhandledError(error);
+            }
+        } finally {
+            this.orderCommentSaveInFlight = false;
+            if (!this.isUnmounted) {
+                this.setState({ isSubmittingOrderComment: false });
             }
         }
     };

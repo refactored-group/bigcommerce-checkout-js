@@ -43,7 +43,11 @@ const makeCheckout = () => {
     return selectors();
   });
   const props = {
-    analyticsTracker: { exitCheckout: jest.fn() },
+    analyticsTracker: {
+      exitCheckout: jest.fn(),
+      trackStepCompleted: jest.fn(),
+      trackStepViewed: jest.fn(),
+    },
     assignItemsToAddress: jest.fn(),
     cart,
     clearError: jest.fn(),
@@ -58,10 +62,11 @@ const makeCheckout = () => {
   } as any;
   const checkout = new Checkout(props);
 
-  (checkout as any).setState = (update: any) => {
+  (checkout as any).setState = (update: any, callback?: () => void) => {
     const nextState =
       typeof update === 'function' ? update(checkout.state, checkout.props) : update;
     checkout.state = { ...checkout.state, ...nextState };
+    callback?.();
   };
 
   return {
@@ -219,6 +224,7 @@ describe('Checkout FFL lifecycle', () => {
       },
       customerAddressSelection: customerAddress,
       selectedFFL: customerAddress,
+      shippingOrderCommentDraft: 'Do not keep this identity-bound draft',
     };
     (checkout as any).isFflRelatedCart = true;
     (checkout as any).customerIdentityKey = 'guest:1';
@@ -228,6 +234,67 @@ describe('Checkout FFL lifecycle', () => {
     expect(checkout.state.confirmedAmmoRoutingSession).toBeUndefined();
     expect(checkout.state.customerAddressSelection).toBeUndefined();
     expect(checkout.state.selectedFFL).toBeNull();
+    expect(checkout.state.shippingOrderCommentDraft).toBeUndefined();
+    expect(checkout.state.requiresShippingCommentConfirmation).toBe(true);
     expect(checkout.state.isResolvingFflShipping).toBe(false);
+  });
+
+  it('forces an FFL checkout back to Shipping while comment confirmation is required', () => {
+    const { checkout, props } = makeCheckout();
+    const navigateToStep = jest.fn();
+    props.steps = [
+      { isComplete: true, isActive: false, type: CheckoutStepType.Customer },
+      { isComplete: true, isActive: false, type: CheckoutStepType.Shipping },
+      { isComplete: true, isActive: false, type: CheckoutStepType.Billing },
+      { isComplete: false, isActive: true, type: CheckoutStepType.Payment },
+    ];
+    (checkout as any).navigateToStep = navigateToStep;
+    (checkout as any).isFflRelatedCart = true;
+    checkout.state = {
+      ...checkout.state,
+      requiresShippingCommentConfirmation: true,
+    };
+
+    (checkout as any).navigateToNextIncompleteStep();
+    (checkout as any).handleEditStep(CheckoutStepType.Billing);
+
+    expect(navigateToStep).toHaveBeenNthCalledWith(1, CheckoutStepType.Shipping, undefined);
+    expect(navigateToStep).toHaveBeenNthCalledWith(2, CheckoutStepType.Shipping);
+  });
+
+  it('re-arms confirmation for note edits without requiring another dealer selection', () => {
+    const { checkout } = makeCheckout();
+    (checkout as any).isFflRelatedCart = true;
+    checkout.state = {
+      ...checkout.state,
+      requiresFreshFflSelection: false,
+      requiresShippingCommentConfirmation: false,
+      selectedFFL: { fflID: '6-04-123-01-5F-03791' },
+    };
+
+    (checkout as any).setShippingOrderCommentDraft('Call first');
+
+    expect(checkout.state.shippingOrderCommentDraft).toBe('Call first');
+    expect(checkout.state.requiresShippingCommentConfirmation).toBe(true);
+    expect(checkout.state.requiresFreshFflSelection).toBe(false);
+  });
+
+  it('clears only the comment gate after current Shipping confirmation succeeds', () => {
+    const { checkout } = makeCheckout();
+    const navigateToStep = jest.fn();
+    (checkout as any).navigateToStep = navigateToStep;
+    checkout.state = {
+      ...checkout.state,
+      requiresFreshFflSelection: true,
+      requiresShippingCommentConfirmation: true,
+      shippingOrderCommentDraft: '',
+    };
+
+    (checkout as any).handleShippingNextStep(false);
+
+    expect(checkout.state.requiresFreshFflSelection).toBe(false);
+    expect(checkout.state.requiresShippingCommentConfirmation).toBe(false);
+    expect(checkout.state.shippingOrderCommentDraft).toBe('');
+    expect(navigateToStep).toHaveBeenCalledWith(CheckoutStepType.Billing);
   });
 });

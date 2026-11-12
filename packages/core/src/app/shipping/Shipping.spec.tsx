@@ -19,6 +19,7 @@ import { getCheckout } from '../checkout/checkouts.mock';
 import CheckoutStepType from '../checkout/CheckoutStepType';
 import { getStoreConfig } from '../config/config.mock';
 import { getCustomer } from '../customer/customers.mock';
+import composeFFLCheckoutNotes from '../order/composeFFLCheckoutNotes';
 import { getCountries } from '../geography/countries.mock';
 import { PaymentMethodId } from '../payment/paymentMethod';
 
@@ -65,6 +66,7 @@ describe('Shipping Component', () => {
             cartHasChanged: false,
             onSignIn: jest.fn(),
             step: { isActive: true,
+                isBusy: false,
                 isComplete: true,
                 isEditable: true,
                 isRequired: true,
@@ -339,6 +341,58 @@ describe('Shipping Component', () => {
         await new Promise((resolve) => process.nextTick(resolve));
 
         expect(checkoutService.updateCheckout).toHaveBeenCalledWith({ customerMessage: 'foo' });
+    });
+
+    it('removes a pre-saved generated block before ordinary shipping advances', async () => {
+        const dealer = { fflID: '6-04-123-01-5F-03791' };
+        jest.spyOn(checkoutState.data, 'getCheckout').mockReturnValue({
+            ...getCheckout(),
+            customerMessage: composeFFLCheckoutNotes('Keep customer text', dealer),
+        });
+        component = mount(<ComponentTest {...defaultProps} />);
+        await new Promise((resolve) => process.nextTick(resolve));
+        component.update();
+
+        expect(component.find('input[name="orderComment"]').prop('value')).toBe(
+            'Keep customer text',
+        );
+        component.find('form').simulate('submit');
+        await new Promise((resolve) => process.nextTick(resolve));
+
+        expect(checkoutService.updateCheckout).toHaveBeenCalledWith({
+            customerMessage: 'Keep customer text',
+        });
+        expect(defaultProps.navigateNextStep).toHaveBeenCalledWith(true);
+    });
+
+    it('waits for one comment save and blocks a duplicate submit', async () => {
+        let releaseSave: (() => void) | undefined;
+        const saveGate = new Promise<CheckoutSelectors>((resolve) => {
+            releaseSave = () => resolve({} as CheckoutSelectors);
+        });
+        jest.spyOn(checkoutService, 'updateCheckout').mockReturnValue(saveGate);
+        component = mount(<ComponentTest {...defaultProps} />);
+        await new Promise((resolve) => process.nextTick(resolve));
+        component.update();
+        component
+            .find('input[name="orderComment"]')
+            .simulate('click')
+            .simulate('change', {
+                target: { value: 'Wait for this', name: 'orderComment' },
+            });
+        await new Promise((resolve) => process.nextTick(resolve));
+        component.update();
+
+        component.find('form').simulate('submit');
+        component.find('form').simulate('submit');
+        await new Promise((resolve) => process.nextTick(resolve));
+
+        expect(checkoutService.updateCheckout).toHaveBeenCalledTimes(1);
+        expect(defaultProps.navigateNextStep).not.toHaveBeenCalled();
+
+        releaseSave?.();
+        await new Promise((resolve) => process.nextTick(resolve));
+        expect(defaultProps.navigateNextStep).toHaveBeenCalledTimes(1);
     });
 
     it('calls onUnhandledError if failures', async () => {

@@ -23,6 +23,7 @@ import {
     mapAddressFromFormValues,
 } from '../address';
 import { ErrorModal } from '../common/error';
+import stripFFLFromCheckoutNotes from '../order/stripFFLFromCheckoutNotes';
 import { Form } from '../ui/form';
 
 import { AssignItemFailedError, AssignItemInvalidAddressError } from './errors';
@@ -42,6 +43,7 @@ export interface MultiShippingFormProps {
     cartHasChanged: boolean;
     consignments: Consignment[];
     customerMessage: string;
+    orderCommentDraft?: string;
     isGuest: boolean;
     isLoading: boolean;
     shouldShowOrderComments: boolean;
@@ -57,6 +59,7 @@ export interface MultiShippingFormProps {
     onSignIn(): void;
     getFields(countryCode?: string): FormField[];
     onSubmit(values: MultiShippingFormValues): void;
+    onOrderCommentChange?(value: string): void;
     onUnhandledError(error: Error): void;
     onUseNewAddress(address: Address, itemId: string): void;
 }
@@ -89,6 +92,20 @@ class MultiShippingForm extends PureComponent<
 
     state: MultiShippingFormState = { items: [] };
 
+    componentDidUpdate(previousProps: MultiShippingFormProps & FormikProps<MultiShippingFormValues>): void {
+        const previousSeed = previousProps.orderCommentDraft ??
+            stripFFLFromCheckoutNotes(previousProps.customerMessage);
+        const nextSeed = this.props.orderCommentDraft ??
+            stripFFLFromCheckoutNotes(this.props.customerMessage);
+
+        if (
+            previousSeed !== nextSeed &&
+            this.props.values.orderComment === previousSeed
+        ) {
+            this.props.setFieldValue('orderComment', nextSeed, false);
+        }
+    }
+
     render(): ReactNode {
         const {
             addresses,
@@ -107,6 +124,7 @@ class MultiShippingForm extends PureComponent<
             countriesWithAutocomplete,
             googleMapsApiKey,
             isFloatingLabelEnabled,
+            onOrderCommentChange,
         } = this.props;
 
         const { items, itemAddingAddress, createCustomerAddressError } = this.state;
@@ -180,6 +198,7 @@ class MultiShippingForm extends PureComponent<
                         shouldShowShippingOptions={
                             !hasUnassignedLineItems(consignments, cart.lineItems)
                         }
+                        onOrderCommentChange={onOrderCommentChange}
                     />
                 </Form>
             </>
@@ -306,9 +325,9 @@ export default withLanguage(
         handleSubmit: (values, { props: { onSubmit } }) => {
             onSubmit(values);
         },
-        mapPropsToValues: ({ customerMessage }) => ({
-            orderComment: customerMessage,
+        mapPropsToValues: ({ customerMessage, orderCommentDraft }) => ({
+            orderComment: orderCommentDraft ?? stripFFLFromCheckoutNotes(customerMessage),
         }),
-        enableReinitialize: true,
+        enableReinitialize: false,
     })(MultiShippingForm),
 );
